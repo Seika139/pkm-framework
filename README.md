@@ -1,5 +1,15 @@
 # PKM Framework
 
+<div align="center">
+  <a href="https://github.com/Seika139/pkm-framework/releases/tag/v0.1.1">
+    <img alt="version" src="https://img.shields.io/badge/version-v0.1.1-white.svg">
+  </a>
+  &nbsp;&nbsp;
+  <a href="https://github.com/Seika139/pkm-framework/actions/workflows/uv-qualify.yml">
+    <img alt="Qualify Code" src="https://github.com/Seika139/pkm-framework/actions/workflows/uv-qualify.yml/badge.svg?branch=main">
+  </a>
+</div>
+
 個人で管理するデジタルな知識情報を人間とAIが扱いやすい形式で保存・管理するためのフレームワークです。
 このリポジトリ自体は知識の管理を行わず、知識管理のためのツールや仕組みを提供します。
 
