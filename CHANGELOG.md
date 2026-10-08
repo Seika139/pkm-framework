@@ -7,10 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Tagged Releases
 
-- [unreleased](https://github.com/Seika139/pkm-framework/compare/v0.1.1...HEAD)
+- [unreleased](https://github.com/Seika139/pkm-framework/compare/v0.1.2...HEAD)
+- [0.1.2](https://github.com/Seika139/pkm-framework/compare/v0.1.1...v0.1.2)
 - [0.1.1](https://github.com/Seika139/pkm-framework/releases/tag/v0.1.1)
 
 ## [Unreleased]
+
+## [0.1.2] - 2026-10-09
 
 ### Fixed
 
