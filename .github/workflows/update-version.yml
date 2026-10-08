@@ -1,0 +1,26 @@
+---
+name: Update Version (reusable)
+
+permissions:
+  contents: write
+  pull-requests: write
+
+"on":
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: "リリース種別"
+        required: true
+        type: choice
+        default: patch
+        options:
+          - major
+          - minor
+          - patch
+
+jobs:
+  common-create-release-branch:
+    uses: Seika139/.github/.github/workflows/update-version.yml@main
+    with:
+      version_bump: ${{ inputs.version_bump }}
+    secrets: inherit
