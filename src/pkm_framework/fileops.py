@@ -119,7 +119,6 @@ class SafeVaultParent:
             finally:
                 os.close(file_fd)
 
-        target = self.path / self.name
         try:
             safe_target = resolve_vault_path(self.vault, self.relative, must_exist=False)
         except VaultPathError:
