@@ -67,7 +67,7 @@ def run_git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedP
             check=False,
             timeout=GIT_COMMAND_TIMEOUT_SECONDS,
         )
-    except subprocess.TimeoutExpired as exc:
+    except subprocess.TimeoutExpired:
         raise SyncError(f"git {command} timed out after {GIT_COMMAND_TIMEOUT_SECONDS} seconds.") from None
     if check and result.returncode != 0:
         raise SyncError(
