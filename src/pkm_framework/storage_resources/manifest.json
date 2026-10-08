@@ -1,0 +1,94 @@
+{
+  "format": 1,
+  "owner": "pkm-framework",
+  "resources": [
+    {
+      "path": "mise/scripts/schedule.sh",
+      "sha256": "112451489cd8da568afaa6b9bcaea61d7478d5fdbf5346c538c940d1df571dfc",
+      "executable": true,
+      "legacy_sha256": "38033ec1c42635bfa7945af79d98a1f81bb9495673f95b2216dcb31453a55923"
+    },
+    {
+      "path": "mise/scripts/scheduler-windows.ps1",
+      "sha256": "eead5e6388c82cf5d5b0eb6547aa98b8b07766d9b25ab45e9fa4e3230a05b467",
+      "executable": false,
+      "legacy_sha256": "eead5e6388c82cf5d5b0eb6547aa98b8b07766d9b25ab45e9fa4e3230a05b467"
+    },
+    {
+      "path": "mise/scripts/scheduler.py",
+      "sha256": "05c783f2c32ea232ac958d62c1f3a66b0a3c1c701ea6ab368ed269859f525bb9",
+      "executable": false,
+      "legacy_sha256": "05c783f2c32ea232ac958d62c1f3a66b0a3c1c701ea6ab368ed269859f525bb9"
+    },
+    {
+      "path": "mise/scripts/storage.sh",
+      "sha256": "3a2784c6858cd50bca2b72d0c65fc52537a6555ae46e4b9c4b1a9ca4bb92db24",
+      "executable": true
+    },
+    {
+      "path": "mise/scripts/sync.py",
+      "sha256": "4989e533bf54e45682721eacd45b110d7e6512dc5c77905fa1b06115af1c58eb",
+      "executable": false,
+      "legacy_sha256": "4989e533bf54e45682721eacd45b110d7e6512dc5c77905fa1b06115af1c58eb"
+    },
+    {
+      "path": "mise/tasks/index.sh",
+      "sha256": "0976126a8b28531a7c7e92787c3567a9fc890da480c209a9a7c762de8445e8bd",
+      "executable": true,
+      "legacy_sha256": "37f88e33cad765df34e9923369607ac70d609cc0a1ef4416e79f9fa7133c4ef2"
+    },
+    {
+      "path": "mise/tasks/mcp.sh",
+      "sha256": "d01d4971aa601152ee4f42c791ad3fb20e42cff16ecdc5cb7f4a4a26462c08e4",
+      "executable": true,
+      "legacy_sha256": "6cec1c11636150b50791a4ba65f6549d3fe4affbbc72888717314a254c8fe525"
+    },
+    {
+      "path": "mise/tasks/read.sh",
+      "sha256": "62d2f98d55cd8cd61ad23c8bd987f2d74403da3119b15d38679350f0dc6c9b03",
+      "executable": true,
+      "legacy_sha256": "b125284e5d15a8a063a530b2c45a0967c04080d6e66267b82ca1bb1d7df6565c"
+    },
+    {
+      "path": "mise/tasks/schedule-install.sh",
+      "sha256": "97a06608c8634b62e3e5cc3c79810890b87a24b494beef69264fbf7b0fd370dc",
+      "executable": true,
+      "legacy_sha256": "d71558a824260d9c19da6e8c6ba05a9285933eb8c1b2efed158767ef30183f85"
+    },
+    {
+      "path": "mise/tasks/schedule-status.sh",
+      "sha256": "cbb52239bfc7268793c9b222d2cd5ba1bdfb739678702ce0aec8753550edf78f",
+      "executable": true,
+      "legacy_sha256": "64e8b7b60b17919f693e1b9d7a8a311172d94ef2f87e9dd4dfe4b985e83c134a"
+    },
+    {
+      "path": "mise/tasks/schedule-uninstall.sh",
+      "sha256": "c78a72979cd44c9d7cf70c086cd5d8ed14c594499ed944a449c900a7efec2cbe",
+      "executable": true,
+      "legacy_sha256": "b94708932fd1a33ed96c58da61f9a01d212dc4a1ecbd06f5a5a36c4cd34922dc"
+    },
+    {
+      "path": "mise/tasks/search.sh",
+      "sha256": "222edc56ec5a1a88fe1c872019bec734b496411939193090f4b47f52623f41a3",
+      "executable": true,
+      "legacy_sha256": "c2b8ffd5e8ff31d8c05a43f46f16c252c7a670a66dc14a94beaaa24fd8323434"
+    },
+    {
+      "path": "mise/tasks/skills-install.sh",
+      "sha256": "347c49efd6a0245c80a8ef7c4b22f0927e7b867a3e508aacd1181ca324c2fd1f",
+      "executable": true,
+      "legacy_sha256": "a79913a26f25036df95156a5a9c62ff342eafe8d94632fff975df0ac9f648a31"
+    },
+    {
+      "path": "mise/tasks/sync.sh",
+      "sha256": "756670af51890d79f49604bc83c16d35564389626c578be711fdcec68b5aecdd",
+      "executable": true,
+      "legacy_sha256": "aafbd9494a12a078b0ac0fb823dd15facae7f43536bebf5ee46d3ed3fab5d71e"
+    },
+    {
+      "path": "pkm-storage-vault/AGENTS.framework.md",
+      "sha256": "6a31ba3b4791921f1d9a7c51dc36e51470ea590d8cc70c62d803b15fd20ba53e",
+      "executable": false
+    }
+  ]
+}
