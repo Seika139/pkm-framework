@@ -34,6 +34,8 @@ jobs:
       - name: Verify packaged skills and storage resources
         run: |
           python - <<'PY'
+          import collections
+          import hashlib
           import json
           from pathlib import Path
           from zipfile import ZipFile
@@ -56,13 +58,41 @@ jobs:
               if manifest_path not in files:
                   raise SystemExit(f"Wheel is missing {manifest_path}.")
               manifest = json.loads(archive.read(manifest_path))
-              resources = {
-                  f"pkm_framework/storage_resources/{item['path']}"
-                  for item in manifest["resources"]
-              }
-              missing = sorted(resources - files)
+              resource_entries = manifest["resources"]
+              path_counts = collections.Counter(item["path"] for item in resource_entries)
+              duplicate_paths = sorted(
+                  path for path, count in path_counts.items() if count > 1
+              )
+              if duplicate_paths:
+                  raise SystemExit(
+                      f"Storage resource manifest contains duplicate paths: {duplicate_paths}"
+                  )
+
+              resources = {item["path"]: item["sha256"] for item in resource_entries}
+              missing = sorted(
+                  f"pkm_framework/storage_resources/{path}"
+                  for path in resources
+                  if f"pkm_framework/storage_resources/{path}" not in files
+              )
               if missing:
                   raise SystemExit(f"Wheel is missing manifest resources: {missing}")
+
+              storage_root = source_root / "storage_resources"
+              for path, expected_hash in resources.items():
+                  source_hash = hashlib.sha256((storage_root / path).read_bytes()).hexdigest()
+                  if source_hash != expected_hash:
+                      raise SystemExit(
+                          f"Storage resource manifest hash mismatch for {path}: "
+                          f"expected {expected_hash}, found {source_hash}."
+                      )
+
+                  wheel_path = f"pkm_framework/storage_resources/{path}"
+                  wheel_hash = hashlib.sha256(archive.read(wheel_path)).hexdigest()
+                  if wheel_hash != expected_hash:
+                      raise SystemExit(
+                          f"Packaged Storage resource hash mismatch for {path}: "
+                          f"expected {expected_hash}, found {wheel_hash}."
+                      )
 
           print(
               f"Verified all {len(expected_skills)} skills and {len(resources)} storage resources in {wheel}."

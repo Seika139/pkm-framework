@@ -27,7 +27,7 @@
     },
     {
       "path": "mise/scripts/sync.py",
-      "sha256": "4989e533bf54e45682721eacd45b110d7e6512dc5c77905fa1b06115af1c58eb",
+      "sha256": "6784b22e097b790618380e5f8b95722ddb29331a0efee367e9e6afacc24b42e6",
       "executable": false,
       "legacy_sha256": "4989e533bf54e45682721eacd45b110d7e6512dc5c77905fa1b06115af1c58eb"
     },
