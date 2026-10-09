@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Corrected the packaged SHA-256 for `mise/scripts/sync.py` so Storage resource installation accepts the current file ([#7](https://github.com/Seika139/pkm-framework/issues/7)).
+
 ## [0.1.2] - 2026-10-09
 
 ### Fixed
