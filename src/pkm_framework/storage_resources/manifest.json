@@ -16,7 +16,7 @@
     },
     {
       "path": "mise/scripts/scheduler.py",
-      "sha256": "2672fc66a705c3423443b7efa9361f6580ed0e33d528479d683fbe692c7ce311",
+      "sha256": "79729a8de9ea32e3fa3f007a531b4b0ba134c746f9fecdc31a13c924352ed19e",
       "executable": false,
       "legacy_sha256": "05c783f2c32ea232ac958d62c1f3a66b0a3c1c701ea6ab368ed269859f525bb9"
     },
