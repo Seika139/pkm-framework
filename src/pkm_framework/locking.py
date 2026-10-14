@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import stat
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -17,6 +18,16 @@ class StorageWriteLockError(RuntimeError):
 
 class StorageWriteLockTimeout(StorageWriteLockError):
     """Another process holds the Storage write lock past the requested timeout."""
+
+
+def _lock_file_identity(path: Path) -> tuple[int, int] | None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise StorageWriteLockError("Storage write lock path must be a single-link regular file.")
+    return info.st_dev, info.st_ino
 
 
 @contextmanager
@@ -42,12 +53,18 @@ def storage_write_lock(storage_root: str | Path, *, timeout: float = 30.0) -> It
         ensure_no_symlink_components(cache, root)
         cache.mkdir(parents=True, exist_ok=True)
         ensure_no_symlink_components(lock_path, root)
-        if lock_path.exists() and not lock_path.is_file():
-            raise StorageWriteLockError("Storage write lock path must be a regular file.")
+        initial_identity = _lock_file_identity(lock_path)
 
         timeout_ms = int(timeout * 1000)
         connection = sqlite3.connect(lock_path, timeout=timeout, isolation_level=None)
+        connected_identity = _lock_file_identity(lock_path)
+        if connected_identity is None or (
+            initial_identity is not None and connected_identity != initial_identity
+        ):
+            raise StorageWriteLockError("Storage write lock path changed while opening the database.")
         connection.execute(f"PRAGMA busy_timeout = {timeout_ms}")
+        if _lock_file_identity(lock_path) != connected_identity:
+            raise StorageWriteLockError("Storage write lock path changed before acquiring the lock.")
         try:
             connection.execute("BEGIN IMMEDIATE")
         except sqlite3.OperationalError as exc:
@@ -56,6 +73,8 @@ def storage_write_lock(storage_root: str | Path, *, timeout: float = 30.0) -> It
             raise StorageWriteLockError("Could not acquire the Storage write lock.") from exc
 
         ensure_no_symlink_components(lock_path, root)
+        if _lock_file_identity(lock_path) != connected_identity:
+            raise StorageWriteLockError("Storage write lock path changed while acquiring the lock.")
     except StorageWriteLockError:
         if connection is not None:
             connection.close()

@@ -7,6 +7,7 @@ import argparse
 import logging
 import logging.handlers
 import os
+import stat
 import subprocess
 import sys
 from datetime import datetime
@@ -29,22 +30,83 @@ class SyncError(RuntimeError):
     """The scheduled sync cannot safely continue."""
 
 
+class SafeRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """Rotate only regular, single-link log files below the Storage root."""
+
+    def __init__(
+        self,
+        filename: str | Path,
+        root: Path,
+        *,
+        maxBytes: int,
+        backupCount: int,
+        encoding: str,
+    ) -> None:
+        self.storage_root = root
+        super().__init__(filename, maxBytes=maxBytes, backupCount=backupCount, encoding=encoding)
+
+    def _identity(self, path: Path) -> tuple[int, int] | None:
+        ensure_no_symlink_components(path, self.storage_root)
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            return None
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise OSError("Sync log paths must be single-link regular files.")
+        return info.st_dev, info.st_ino
+
+    def _open(self):
+        path = Path(self.baseFilename)
+        before = self._identity(path)
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        if before is None:
+            flags |= os.O_EXCL
+        descriptor = os.open(path, flags, 0o600)
+        try:
+            ensure_no_symlink_components(path, self.storage_root)
+            opened = os.fstat(descriptor)
+            current = path.lstat()
+            identity = (opened.st_dev, opened.st_ino)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_nlink != 1
+                or not stat.S_ISREG(current.st_mode)
+                or current.st_nlink != 1
+                or identity != (current.st_dev, current.st_ino)
+                or (before is not None and identity != before)
+            ):
+                raise OSError("Sync log path changed or is not a single-link regular file.")
+            stream = os.fdopen(
+                descriptor,
+                self.mode,
+                encoding=self.encoding,
+                errors=self.errors,
+            )
+            descriptor = -1
+            return stream
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    def doRollover(self) -> None:
+        for index in range(self.backupCount + 1):
+            path = Path(self.baseFilename if index == 0 else f"{self.baseFilename}.{index}")
+            self._identity(path)
+        super().doRollover()
+
+
 def configure_logging(root: Path) -> None:
     log_dir = root / ".pkm" / "cache" / "logs"
     ensure_no_symlink_components(log_dir, root)
     log_dir.mkdir(parents=True, exist_ok=True)
     ensure_no_symlink_components(log_dir, root)
     log_file = log_dir / "sync.log"
-    ensure_no_symlink_components(log_file, root)
-    if log_file.exists() and not log_file.is_file():
-        raise OSError("Sync log path must be a regular file.")
 
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
     stream = logging.StreamHandler()
     stream.setFormatter(formatter)
-    file_handler = logging.handlers.RotatingFileHandler(
-        log_file, maxBytes=1_048_576, backupCount=3, encoding="utf-8"
-    )
+    file_handler = SafeRotatingFileHandler(log_file, root, maxBytes=1_048_576, backupCount=3, encoding="utf-8")
     file_handler.setFormatter(formatter)
     LOGGER.handlers.clear()
     LOGGER.addHandler(stream)
@@ -77,6 +139,15 @@ def run_git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedP
 
 
 def ensure_repository(root: Path) -> None:
+    git_entry = root / ".git"
+    try:
+        ensure_no_symlink_components(root, root)
+        ensure_no_symlink_components(git_entry, root)
+        git_info = git_entry.lstat()
+    except (OSError, VaultPathError) as exc:
+        raise SyncError("Storage repository metadata must not use symbolic links or junctions.") from exc
+    if not (stat.S_ISDIR(git_info.st_mode) or stat.S_ISREG(git_info.st_mode)):
+        raise SyncError("Storage repository metadata must be a directory or a regular Git pointer file.")
     result = run_git(root, "rev-parse", "--show-toplevel", check=False)
     if result.returncode != 0 or Path(result.stdout.strip()).resolve() != root.resolve():
         raise SyncError("Storage directory is not the Git repository root.")
