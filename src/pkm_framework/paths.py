@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 from pathlib import Path, PurePosixPath
 
 
@@ -15,23 +16,58 @@ def _absolute(path: Path) -> Path:
     return Path(os.path.abspath(path.expanduser()))
 
 
+def _is_path_redirection(path: Path, info: os.stat_result) -> bool:
+    if stat.S_ISLNK(info.st_mode):
+        return True
+    if os.name != "nt":
+        return False
+
+    reparse_tag = getattr(info, "st_reparse_tag", 0)
+    if reparse_tag in {0xA000000C, 0xA0000003}:  # symlink or mount point/junction
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    return callable(is_junction) and is_junction()
+
+
+def _reject_redirected_components(path: Path, anchor: Path | None = None) -> None:
+    if anchor is None:
+        components = (path,)
+    else:
+        try:
+            relative = path.relative_to(anchor)
+        except ValueError as exc:
+            raise VaultPathError("Path is outside its allowed root.") from exc
+        descendants = []
+        current = anchor
+        for component in relative.parts:
+            current = current / component
+            descendants.append(current)
+        components = (anchor, *descendants)
+
+    for current in components:
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise VaultPathError("Path has an inaccessible component.") from exc
+        if _is_path_redirection(current, info):
+            raise VaultPathError("Symbolic links and junctions are not allowed in vault paths.")
+
+
 def ensure_no_symlink_components(path: Path, anchor: Path) -> Path:
     """Return an absolute path after ensuring it stays below a real anchor."""
 
     path = _absolute(path)
     anchor = _absolute(anchor)
-    if anchor.is_symlink() or not anchor.is_dir():
+    _reject_redirected_components(path, anchor)
+    if not anchor.is_dir():
         raise VaultPathError("Path anchor must be a real directory.")
     try:
         relative = path.relative_to(anchor)
     except ValueError as exc:
         raise VaultPathError("Path is outside its allowed root.") from exc
 
-    current = anchor
-    for component in relative.parts:
-        current = current / component
-        if current.is_symlink():
-            raise VaultPathError("Symbolic links are not allowed in vault paths.")
     try:
         resolved_anchor = anchor.resolve(strict=True)
         existing = path
@@ -71,7 +107,8 @@ def resolve_vault_path(
 
     relative = validate_vault_relative(relative_path)
     root = _absolute(vault)
-    if root.is_symlink() or not root.is_dir():
+    _reject_redirected_components(root)
+    if not root.is_dir():
         raise VaultPathError("Selected Vault must be a real directory.")
     try:
         resolved_root = root.resolve(strict=True)
@@ -82,10 +119,17 @@ def resolve_vault_path(
     current = root
     for index, component in enumerate(relative.parts):
         current = current / component
-        if current.is_symlink():
-            raise VaultPathError("Symbolic links are not allowed in vault paths.")
+        try:
+            current.lstat()
+            exists = True
+        except FileNotFoundError:
+            exists = False
+        except OSError as exc:
+            raise VaultPathError("Path has an inaccessible component.") from exc
+        if exists:
+            _reject_redirected_components(current)
         final = index == len(relative.parts) - 1
-        if current.exists():
+        if exists:
             if not final and not current.is_dir():
                 raise VaultPathError("A parent component is not a directory.")
             if final and not allow_directory and not current.is_file():

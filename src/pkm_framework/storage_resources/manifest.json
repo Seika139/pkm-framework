@@ -10,13 +10,13 @@
     },
     {
       "path": "mise/scripts/scheduler-windows.ps1",
-      "sha256": "eead5e6388c82cf5d5b0eb6547aa98b8b07766d9b25ab45e9fa4e3230a05b467",
+      "sha256": "ecb0e4ecc765c2af81b206227b1301caca6cf630d305650154ca154fe97a617b",
       "executable": false,
       "legacy_sha256": "eead5e6388c82cf5d5b0eb6547aa98b8b07766d9b25ab45e9fa4e3230a05b467"
     },
     {
       "path": "mise/scripts/scheduler.py",
-      "sha256": "05c783f2c32ea232ac958d62c1f3a66b0a3c1c701ea6ab368ed269859f525bb9",
+      "sha256": "2672fc66a705c3423443b7efa9361f6580ed0e33d528479d683fbe692c7ce311",
       "executable": false,
       "legacy_sha256": "05c783f2c32ea232ac958d62c1f3a66b0a3c1c701ea6ab368ed269859f525bb9"
     },
@@ -27,7 +27,7 @@
     },
     {
       "path": "mise/scripts/sync.py",
-      "sha256": "6784b22e097b790618380e5f8b95722ddb29331a0efee367e9e6afacc24b42e6",
+      "sha256": "a918fc2818e3f13a2012ea24ceea2fcf042433a160153c71c12d439bd5db85f8",
       "executable": false,
       "legacy_sha256": "4989e533bf54e45682721eacd45b110d7e6512dc5c77905fa1b06115af1c58eb"
     },

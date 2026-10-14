@@ -32,10 +32,11 @@ def run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[s
     return result
 
 
-def safe_path(path: Path, *, directory: bool = False) -> Path:
+def safe_path(path: Path, *, directory: bool = False, anchor: Path | None = None) -> Path:
     path = Path(os.path.abspath(path))
+    anchor = Path(os.path.abspath(anchor)) if anchor is not None else path.parent
     try:
-        ensure_no_symlink_components(path, Path(path.anchor))
+        ensure_no_symlink_components(path, anchor)
     except VaultPathError as exc:
         raise SchedulerError("Scheduler paths must not contain symbolic links.") from exc
     if path.exists():
@@ -47,22 +48,48 @@ def safe_path(path: Path, *, directory: bool = False) -> Path:
     return path
 
 
-def safe_directory(path: Path, *, create: bool = False) -> Path:
-    path = safe_path(path, directory=True)
+def safe_directory(path: Path, *, create: bool = False, anchor: Path | None = None) -> Path:
+    path = Path(os.path.abspath(path))
+    anchor = Path(os.path.abspath(anchor)) if anchor is not None else path.parent
+    path = safe_path(path, directory=True, anchor=anchor)
     if create:
         path.mkdir(parents=True, exist_ok=True)
-        path = safe_path(path, directory=True)
+        path = safe_path(path, directory=True, anchor=anchor)
     return path
 
 
-def write_regular_file(path: Path, content: str | bytes) -> None:
-    path = safe_path(path)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+def write_regular_file(path: Path, content: str | bytes, *, anchor: Path | None = None) -> None:
+    path = safe_path(path, anchor=anchor)
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        before = None
+    if before is not None and (
+        not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+    ):
+        raise SchedulerError("Scheduler output path must be a single-link regular file.")
+
+    flags = os.O_WRONLY | os.O_CREAT
     flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    if before is None:
+        flags |= os.O_EXCL
     descriptor = os.open(path, flags, 0o600)
     try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise SchedulerError("Scheduler output path must be a regular file.")
+        safe_path(path, anchor=anchor)
+        opened = os.fstat(descriptor)
+        current = path.lstat()
+        identity = (opened.st_dev, opened.st_ino)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or not stat.S_ISREG(current.st_mode)
+            or current.st_nlink != 1
+            or identity != (current.st_dev, current.st_ino)
+            or (before is not None and identity != (before.st_dev, before.st_ino))
+        ):
+            raise SchedulerError("Scheduler output path changed or is not a single-link regular file.")
+        os.ftruncate(descriptor, 0)
+        os.lseek(descriptor, 0, os.SEEK_SET)
         if isinstance(content, bytes):
             with os.fdopen(descriptor, "wb") as stream:
                 descriptor = -1
@@ -74,6 +101,39 @@ def write_regular_file(path: Path, content: str | bytes) -> None:
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+def ensure_single_link_regular_file(path: Path, *, anchor: Path) -> Path:
+    path = safe_path(path, anchor=anchor)
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        before = None
+    if before is not None and (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1):
+        raise SchedulerError("Scheduler log path must be a single-link regular file.")
+
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    if before is None:
+        flags |= os.O_EXCL
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        safe_path(path, anchor=anchor)
+        opened = os.fstat(descriptor)
+        current = path.lstat()
+        identity = (opened.st_dev, opened.st_ino)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or not stat.S_ISREG(current.st_mode)
+            or current.st_nlink != 1
+            or identity != (current.st_dev, current.st_ino)
+            or (before is not None and identity != (before.st_dev, before.st_ino))
+        ):
+            raise SchedulerError("Scheduler log path changed or is not a single-link regular file.")
+    finally:
+        os.close(descriptor)
+    return path
 
 
 def mise_executable() -> str:
@@ -102,11 +162,12 @@ def mac_plist_path() -> Path:
 
 def install_macos(root: Path, mise: str, environment_path: str) -> None:
     log_dir = prepare_log_dir(root)
-    plist_path = safe_path(mac_plist_path())
-    safe_directory(plist_path.parent, create=True)
-    temporary = safe_path(plist_path.with_suffix(".plist.tmp"))
-    stdout_path = safe_path(log_dir / "scheduler.stdout.log")
-    stderr_path = safe_path(log_dir / "scheduler.stderr.log")
+    plist_path = mac_plist_path()
+    safe_directory(plist_path.parent, create=True, anchor=Path.home())
+    plist_path = safe_path(plist_path, anchor=plist_path.parent)
+    temporary = safe_path(plist_path.with_suffix(".plist.tmp"), anchor=plist_path.parent)
+    stdout_path = ensure_single_link_regular_file(log_dir / "scheduler.stdout.log", anchor=root)
+    stderr_path = ensure_single_link_regular_file(log_dir / "scheduler.stderr.log", anchor=root)
     domain = f"gui/{os.getuid()}"
     document = {
         "Label": MAC_LABEL,
@@ -118,9 +179,9 @@ def install_macos(root: Path, mise: str, environment_path: str) -> None:
         "StandardErrorPath": str(stderr_path),
     }
     run(["launchctl", "bootout", f"{domain}/{MAC_LABEL}"], check=False)
-    write_regular_file(temporary, plistlib.dumps(document, sort_keys=True))
-    safe_path(plist_path)
-    safe_path(temporary)
+    write_regular_file(temporary, plistlib.dumps(document, sort_keys=True), anchor=plist_path.parent)
+    safe_path(plist_path, anchor=plist_path.parent)
+    safe_path(temporary, anchor=plist_path.parent)
     temporary.replace(plist_path)
     run(["launchctl", "bootstrap", domain, str(plist_path)])
     print(f"Installed hourly LaunchAgent: {MAC_LABEL}")
@@ -128,7 +189,7 @@ def install_macos(root: Path, mise: str, environment_path: str) -> None:
 
 def status_macos() -> None:
     domain = f"gui/{os.getuid()}"
-    safe_path(mac_plist_path())
+    safe_path(mac_plist_path(), anchor=Path.home())
     result = run(["launchctl", "print", f"{domain}/{MAC_LABEL}"], check=False)
     if result.returncode == 0:
         print(result.stdout.strip())
@@ -141,7 +202,7 @@ def status_macos() -> None:
 
 def uninstall_macos() -> None:
     domain = f"gui/{os.getuid()}"
-    plist_path = safe_path(mac_plist_path())
+    plist_path = safe_path(mac_plist_path(), anchor=Path.home())
     result = run(["launchctl", "bootout", f"{domain}/{MAC_LABEL}"], check=False)
     if result.returncode != 0 and plist_path.exists():
         loaded = run(["launchctl", "print", f"{domain}/{MAC_LABEL}"], check=False)
@@ -156,6 +217,18 @@ def systemd_user_dir() -> Path:
     if not config_home.is_absolute():
         raise SchedulerError("XDG_CONFIG_HOME must be an absolute path.")
     return config_home / "systemd" / "user"
+
+
+def systemd_config_anchor() -> Path:
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")).expanduser()
+    if not config_home.is_absolute():
+        raise SchedulerError("XDG_CONFIG_HOME must be an absolute path.")
+    if config_home.exists():
+        return config_home
+    current = config_home.parent
+    while not current.exists() and current != Path(current.anchor):
+        current = current.parent
+    return current
 
 
 def systemd_quote(value: str) -> str:
@@ -201,19 +274,19 @@ def systemd_timer() -> str:
 
 
 def install_linux(root: Path, mise: str, environment_path: str) -> None:
-    unit_dir = safe_directory(systemd_user_dir(), create=True)
-    service = safe_path(unit_dir / f"{SYSTEMD_NAME}.service")
-    timer = safe_path(unit_dir / f"{SYSTEMD_NAME}.timer")
-    write_regular_file(service, systemd_service(root, mise, environment_path))
-    write_regular_file(timer, systemd_timer())
+    unit_dir = safe_directory(systemd_user_dir(), create=True, anchor=systemd_config_anchor())
+    service = safe_path(unit_dir / f"{SYSTEMD_NAME}.service", anchor=unit_dir)
+    timer = safe_path(unit_dir / f"{SYSTEMD_NAME}.timer", anchor=unit_dir)
+    write_regular_file(service, systemd_service(root, mise, environment_path), anchor=unit_dir)
+    write_regular_file(timer, systemd_timer(), anchor=unit_dir)
     run(["systemctl", "--user", "daemon-reload"])
     run(["systemctl", "--user", "enable", "--now", f"{SYSTEMD_NAME}.timer"])
     print(f"Installed hourly systemd user timer: {SYSTEMD_NAME}.timer")
 
 
 def status_linux() -> None:
-    unit_dir = safe_directory(systemd_user_dir())
-    timer = safe_path(unit_dir / f"{SYSTEMD_NAME}.timer")
+    unit_dir = safe_directory(systemd_user_dir(), anchor=systemd_config_anchor())
+    timer = safe_path(unit_dir / f"{SYSTEMD_NAME}.timer", anchor=unit_dir)
     if not timer.exists():
         print("PKM scheduled sync is not installed for this user.")
         return
@@ -227,9 +300,9 @@ def status_linux() -> None:
 
 
 def uninstall_linux() -> None:
-    unit_dir = safe_directory(systemd_user_dir())
-    service = safe_path(unit_dir / f"{SYSTEMD_NAME}.service")
-    timer = safe_path(unit_dir / f"{SYSTEMD_NAME}.timer")
+    unit_dir = safe_directory(systemd_user_dir(), anchor=systemd_config_anchor())
+    service = safe_path(unit_dir / f"{SYSTEMD_NAME}.service", anchor=unit_dir)
+    timer = safe_path(unit_dir / f"{SYSTEMD_NAME}.timer", anchor=unit_dir)
     if not service.exists() and not timer.exists():
         print("PKM scheduled sync is not installed for this user.")
         return
@@ -246,14 +319,24 @@ def windows_script(root: Path, action: str, mise: str | None = None) -> None:
     if powershell is None:
         raise SchedulerError("PowerShell is required to manage Windows Task Scheduler.")
     script = Path(__file__).with_name("scheduler-windows.ps1")
-    args = [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script), "-Action", action]
+    args = [
+        powershell,
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        "-Action",
+        action,
+        "-StorageRoot",
+        str(root),
+    ]
     if action == "install":
         if mise is None:
             raise SchedulerError("Could not resolve mise for the Windows scheduled task.")
         args.extend(
             [
-                "-StorageRoot",
-                str(root),
                 "-MisePath",
                 mise,
                 "-PowerShellPath",
@@ -296,7 +379,11 @@ def main() -> int:
     args = parser.parse_args()
     try:
         root = args.storage.expanduser().absolute()
-        if not root.is_dir() or root.is_symlink():
+        try:
+            ensure_no_symlink_components(root, root)
+        except VaultPathError as exc:
+            raise SchedulerError(f"Storage root must not contain symbolic links or junctions: {root}") from exc
+        if not root.is_dir():
             raise SchedulerError(f"Storage root must be a real directory: {root}")
         dispatch(args.action, root)
         return 0
