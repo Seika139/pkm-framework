@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Hardened Storage path validation against symbolic links, Windows junctions, and files that are not single-link regular files.
+- Improved scheduled-sync task ownership checks and handling of missing systemd user directories.
+- Protected Git metadata and rotating sync logs against redirected paths and unsafe file types.
+
 ## [0.1.3] - 2026-10-09
 
 ### Fixed
