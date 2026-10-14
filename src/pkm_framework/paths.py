@@ -64,7 +64,7 @@ def ensure_no_symlink_components(path: Path, anchor: Path) -> Path:
     if not anchor.is_dir():
         raise VaultPathError("Path anchor must be a real directory.")
     try:
-        relative = path.relative_to(anchor)
+        path.relative_to(anchor)
     except ValueError as exc:
         raise VaultPathError("Path is outside its allowed root.") from exc
 
