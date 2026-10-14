@@ -285,7 +285,12 @@ def install_linux(root: Path, mise: str, environment_path: str) -> None:
 
 
 def status_linux() -> None:
-    unit_dir = safe_directory(systemd_user_dir(), anchor=systemd_config_anchor())
+    unit_dir = safe_directory(
+        systemd_user_dir(), create=False, anchor=systemd_config_anchor()
+    )
+    if not unit_dir.exists():
+        print("PKM scheduled sync is not installed for this user.")
+        return
     timer = safe_path(unit_dir / f"{SYSTEMD_NAME}.timer", anchor=unit_dir)
     if not timer.exists():
         print("PKM scheduled sync is not installed for this user.")
@@ -300,7 +305,12 @@ def status_linux() -> None:
 
 
 def uninstall_linux() -> None:
-    unit_dir = safe_directory(systemd_user_dir(), anchor=systemd_config_anchor())
+    unit_dir = safe_directory(
+        systemd_user_dir(), create=False, anchor=systemd_config_anchor()
+    )
+    if not unit_dir.exists():
+        print("PKM scheduled sync is not installed for this user.")
+        return
     service = safe_path(unit_dir / f"{SYSTEMD_NAME}.service", anchor=unit_dir)
     timer = safe_path(unit_dir / f"{SYSTEMD_NAME}.timer", anchor=unit_dir)
     if not service.exists() and not timer.exists():
