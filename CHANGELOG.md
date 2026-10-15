@@ -15,6 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Framework-managed Storage tasks are now Python file tasks instead of Bash scripts, so they run natively on Windows without WSL. Storage mise configuration must provide Python `3.12` and uv `0.12.23`, and Git must be installed separately for `mise run sync`.
+- Schedule tasks now verify that the macOS LaunchAgent or Linux systemd unit was created for the current Storage before reporting status or uninstalling it.
+- Storage sync reports a clear error when Git is not installed or not on `PATH`.
+
+### Removed
+
+- Removed the Bash variants of the distributed Storage tasks and scripts (`mise/tasks/*.sh`, `mise/scripts/schedule.sh`, `mise/scripts/storage.sh`); the installer retires previously managed copies from Storage.
+- Removed the `grant-permissions` mise task from the Framework development setup; Python file tasks no longer need execute-permission fixes.
+
 ## [0.1.4] - 2026-10-15
 
 ### Fixed

@@ -21,3 +21,8 @@ packages = ["src/pkm_framework"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# sys.path を操作してから隣接 scripts を import する構造のため E402 を除外する
+"src/pkm_framework/storage_resources/mise/tasks/*.py" = ["E402"]
+"tests/test_scheduler_ownership.py" = ["E402"]

@@ -43,9 +43,14 @@ def _safe_relative_path(raw_path: Any) -> PurePosixPath:
     path = PurePosixPath(raw_path)
     if path.is_absolute() or path.as_posix() != raw_path or any(part in {"", ".", ".."} for part in path.parts):
         raise ManagedResourceError(f"Framework resource path is not relative and safe: {raw_path!r}")
-    allowed = (path.parts[:2] == ("mise", "tasks") and path.as_posix() != "mise/tasks/setup.sh") or (
-        path.parts[:2] == ("mise", "scripts")
-    ) or path.as_posix() == "pkm-storage-vault/AGENTS.framework.md"
+    allowed = (
+        (
+            path.parts[:2] == ("mise", "tasks")
+            and path.as_posix() not in {"mise/tasks/setup.sh", "mise/tasks/setup.py"}
+        )
+        or path.parts[:2] == ("mise", "scripts")
+        or path.as_posix() == "pkm-storage-vault/AGENTS.framework.md"
+    )
     if not allowed:
         raise ManagedResourceError(f"Framework resource path is outside the reserved paths: {raw_path}")
     return path
@@ -265,6 +270,14 @@ def _expected_state(state: tuple[bytes, int] | None) -> dict[str, Any] | None:
     return {"sha256": _sha256(state[0]), "mode": state[1]}
 
 
+def _mode_matches(current: int, expected: int) -> bool:
+    if os.name == "nt":
+        # Windows exposes only the writable/read-only distinction through chmod;
+        # execute and group/other permission bits cannot be restored there.
+        return bool(current & stat.S_IWRITE) == bool(expected & stat.S_IWRITE)
+    return current == expected
+
+
 def _matches_expected(state: tuple[bytes, int] | None, expected: Any, label: str) -> bool:
     if expected is None:
         return state is None
@@ -278,7 +291,11 @@ def _matches_expected(state: tuple[bytes, int] | None, expected: Any, label: str
         or not 0 <= expected["mode"] <= 0o777
     ):
         raise ManagedResourceError(f"Framework install journal has an invalid expected state for {label}.")
-    return state is not None and _sha256(state[0]) == expected["sha256"] and state[1] == expected["mode"]
+    return (
+        state is not None
+        and _sha256(state[0]) == expected["sha256"]
+        and _mode_matches(state[1], expected["mode"])
+    )
 
 
 def _gitignore_block(packaged: dict[str, dict[str, Any]]) -> bytes:
