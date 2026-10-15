@@ -1,3 +1,7 @@
 [tools]
 python = "3.12"
 uv = "0.12.23"
+
+[tasks.sync]
+description = "Framework の Python 依存関係を同期する"
+run = "uv sync"

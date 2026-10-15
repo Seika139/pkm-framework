@@ -26,7 +26,7 @@ Markdown が正本で、SQLite は `.pkm/cache/index.sqlite` に置く再生成�
 
 ## 開発環境
 
-`mise.toml` で固定した Python `3.12` と uv `0.12.23` を mise が管理します。Framework 開発用の `mise run sync` は macOS / Linux で Bash、Windows で PowerShell を使います。Framework package に同梱する Storage 内部 task は Python file task とし、Storage 側で mise が管理する Python と uv を使って実行します。
+`mise.toml` で固定した Python `3.12` と uv `0.12.23` を mise が管理します。Framework 開発用の `mise run sync` は `mise.toml` の TOML task で、macOS / Linux / Windows で同じように実行できます。Framework package に同梱する Storage 内部 task は Python file task とし、Storage 側で mise が管理する Python と uv を使って実行します。
 
 ```bash
 mise install
