@@ -1,8 +1,8 @@
 # PKM Framework
 
 <div align="center">
-  <a href="https://github.com/Seika139/pkm-framework/releases/tag/v0.2.0">
-    <img alt="version" src="https://img.shields.io/badge/version-v0.2.0-white.svg">
+  <a href="https://github.com/Seika139/pkm-framework/releases/tag/v0.2.1">
+    <img alt="version" src="https://img.shields.io/badge/version-v0.2.1-white.svg">
   </a>
   &nbsp;&nbsp;
   <a href="https://github.com/Seika139/pkm-framework/actions/workflows/uv-qualify.yml">
