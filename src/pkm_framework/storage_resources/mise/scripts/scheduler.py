@@ -7,6 +7,7 @@ import argparse
 import os
 import platform
 import plistlib
+import re
 import shutil
 import stat
 import subprocess
@@ -160,15 +161,164 @@ def mac_plist_path() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{MAC_LABEL}.plist"
 
 
+def validate_macos_job(document: object, root: Path) -> None:
+    expected_keys = {
+        "Label",
+        "ProgramArguments",
+        "WorkingDirectory",
+        "StartInterval",
+        "EnvironmentVariables",
+        "StandardOutPath",
+        "StandardErrorPath",
+    }
+    arguments = document.get("ProgramArguments") if isinstance(document, dict) else None
+    environment = document.get("EnvironmentVariables") if isinstance(document, dict) else None
+    stdout_path = root / ".pkm" / "cache" / "logs" / "scheduler.stdout.log"
+    stderr_path = root / ".pkm" / "cache" / "logs" / "scheduler.stderr.log"
+    if (
+        not isinstance(document, dict)
+        or set(document) != expected_keys
+        or document.get("Label") != MAC_LABEL
+        or document.get("WorkingDirectory") != str(root)
+        or not isinstance(arguments, list)
+        or len(arguments) != 3
+        or not isinstance(arguments[0], str)
+        or not Path(arguments[0]).is_absolute()
+        or Path(arguments[0]).name != "mise"
+        or arguments[1:] != ["run", "sync"]
+        or type(document.get("StartInterval")) is not int
+        or document.get("StartInterval") != 3600
+        or not isinstance(environment, dict)
+        or set(environment) != {"PATH"}
+        or not isinstance(environment.get("PATH"), str)
+        or "\n" in environment["PATH"]
+        or "\r" in environment["PATH"]
+        or document.get("StandardOutPath") != str(stdout_path)
+        or document.get("StandardErrorPath") != str(stderr_path)
+    ):
+        raise SchedulerError("Existing LaunchAgent does not match this Storage; refusing to modify it.")
+
+
+def read_macos_job(root: Path) -> dict[str, object] | None:
+    plist_path = safe_path(mac_plist_path(), anchor=Path.home())
+    if not plist_path.exists():
+        return None
+    try:
+        document = plistlib.loads(plist_path.read_bytes())
+    except Exception as exc:
+        raise SchedulerError("Existing LaunchAgent plist cannot be safely read.") from exc
+    validate_macos_job(document, root)
+    return document
+
+
+def _launchctl_service_missing(result: subprocess.CompletedProcess[str], service: str) -> bool:
+    if result.returncode == 0:
+        return False
+    output = (result.stderr or result.stdout).strip()
+    service_pattern = rf"(?:{re.escape(service)}|{re.escape(MAC_LABEL)})"
+    return re.fullmatch(
+        rf'Could not find service ["\']?{service_pattern}["\']? in domain for .+',
+        output,
+        flags=re.IGNORECASE,
+    ) is not None
+
+
+def _query_macos_job(domain: str) -> subprocess.CompletedProcess[str] | None:
+    service = f"{domain}/{MAC_LABEL}"
+    result = run(["launchctl", "print", service], check=False)
+    if result.returncode == 0:
+        return result
+    if _launchctl_service_missing(result, service):
+        return None
+    raise SchedulerError("Could not confidently determine whether the LaunchAgent is loaded.")
+
+
+def _launchctl_field(output: str, name: str) -> str:
+    pattern = re.compile(rf"^\t{re.escape(name)} = ([^\r\n]*)$", re.MULTILINE)
+    matches = pattern.findall(output)
+    if len(matches) != 1:
+        raise SchedulerError("Loaded LaunchAgent output cannot be safely matched to its plist.")
+    return matches[0]
+
+
+def _launchctl_block(output: str, name: str) -> list[str]:
+    lines = output.splitlines()
+    starts = [index for index, line in enumerate(lines) if line == f"\t{name} = {{"]
+    if len(starts) != 1:
+        raise SchedulerError("Loaded LaunchAgent output cannot be safely matched to its plist.")
+    values: list[str] = []
+    for line in lines[starts[0] + 1 :]:
+        if line == "\t}":
+            return values
+        if not line.startswith("\t\t") or line == "\t\t":
+            raise SchedulerError("Loaded LaunchAgent output cannot be safely matched to its plist.")
+        values.append(line[2:])
+    raise SchedulerError("Loaded LaunchAgent output cannot be safely matched to its plist.")
+
+
+def validate_loaded_macos_job(
+    output: str,
+    domain: str,
+    plist_path: Path,
+    document: dict[str, object],
+) -> None:
+    first_line = output.splitlines()[0] if output.splitlines() else ""
+    if first_line != f"{domain}/{MAC_LABEL} = {{":
+        raise SchedulerError("Loaded LaunchAgent output cannot be safely matched to its plist.")
+    arguments = document["ProgramArguments"]
+    environment = document["EnvironmentVariables"]
+    assert isinstance(arguments, list) and isinstance(environment, dict)
+    expected_fields = {
+        "path": str(plist_path),
+        "type": "LaunchAgent",
+        "program": arguments[0],
+        "working directory": document["WorkingDirectory"],
+        "stdout path": document["StandardOutPath"],
+        "stderr path": document["StandardErrorPath"],
+        "run interval": f'{document["StartInterval"]} seconds',
+    }
+    if any(_launchctl_field(output, name) != value for name, value in expected_fields.items()):
+        raise SchedulerError("Loaded LaunchAgent does not match its on-disk plist; refusing to modify it.")
+
+    properties = {value.strip().casefold() for value in _launchctl_field(output, "properties").split("|")}
+    if properties != {"inferred program"}:
+        raise SchedulerError("Loaded LaunchAgent properties do not match its on-disk plist; refusing to modify it.")
+
+    if _launchctl_block(output, "arguments") != arguments:
+        raise SchedulerError("Loaded LaunchAgent arguments do not match its on-disk plist; refusing to modify it.")
+
+    environment_values: dict[str, str] = {}
+    for line in _launchctl_block(output, "environment"):
+        key, separator, value = line.partition(" => ")
+        if not separator or not key or key in environment_values:
+            raise SchedulerError("Loaded LaunchAgent environment cannot be safely matched to its plist.")
+        environment_values[key] = value
+    # launchd adds these values to the environment it reports for a job.
+    allowed_launchd_values = {"XPC_SERVICE_NAME", "OSLogRateLimit"}
+    expected_path = environment.get("PATH")
+    if (
+        environment_values.get("PATH") != expected_path
+        or set(environment_values) - {"PATH"} - allowed_launchd_values
+    ):
+        raise SchedulerError("Loaded LaunchAgent environment does not match its on-disk plist; refusing to modify it.")
+
+
 def install_macos(root: Path, mise: str, environment_path: str) -> None:
-    log_dir = prepare_log_dir(root)
     plist_path = mac_plist_path()
+    existing = read_macos_job(root)
+    domain = f"gui/{os.getuid()}"
+    loaded = _query_macos_job(domain)
+    if loaded is not None and existing is None:
+        raise SchedulerError("A loaded LaunchAgent has no attributable plist; refusing to replace it.")
+    if loaded is not None and existing is not None:
+        validate_loaded_macos_job(loaded.stdout, domain, plist_path, existing)
+
+    log_dir = prepare_log_dir(root)
     safe_directory(plist_path.parent, create=True, anchor=Path.home())
     plist_path = safe_path(plist_path, anchor=plist_path.parent)
     temporary = safe_path(plist_path.with_suffix(".plist.tmp"), anchor=plist_path.parent)
     stdout_path = ensure_single_link_regular_file(log_dir / "scheduler.stdout.log", anchor=root)
     stderr_path = ensure_single_link_regular_file(log_dir / "scheduler.stderr.log", anchor=root)
-    domain = f"gui/{os.getuid()}"
     document = {
         "Label": MAC_LABEL,
         "ProgramArguments": [mise, "run", "sync"],
@@ -178,7 +328,8 @@ def install_macos(root: Path, mise: str, environment_path: str) -> None:
         "StandardOutPath": str(stdout_path),
         "StandardErrorPath": str(stderr_path),
     }
-    run(["launchctl", "bootout", f"{domain}/{MAC_LABEL}"], check=False)
+    if loaded is not None:
+        run(["launchctl", "bootout", f"{domain}/{MAC_LABEL}"])
     write_regular_file(temporary, plistlib.dumps(document, sort_keys=True), anchor=plist_path.parent)
     safe_path(plist_path, anchor=plist_path.parent)
     safe_path(temporary, anchor=plist_path.parent)
@@ -187,27 +338,36 @@ def install_macos(root: Path, mise: str, environment_path: str) -> None:
     print(f"Installed hourly LaunchAgent: {MAC_LABEL}")
 
 
-def status_macos() -> None:
+def status_macos(root: Path) -> None:
     domain = f"gui/{os.getuid()}"
-    safe_path(mac_plist_path(), anchor=Path.home())
-    result = run(["launchctl", "print", f"{domain}/{MAC_LABEL}"], check=False)
-    if result.returncode == 0:
-        print(result.stdout.strip())
-        return
-    if not mac_plist_path().exists():
+    document = read_macos_job(root)
+    loaded = _query_macos_job(domain)
+    if loaded is None and document is None:
         print("PKM scheduled sync is not installed for this user.")
         return
-    raise SchedulerError(result.stderr.strip() or "LaunchAgent file exists but is not loaded.")
+    if loaded is None:
+        raise SchedulerError("LaunchAgent file exists but is not loaded.")
+    if document is None:
+        raise SchedulerError("A loaded LaunchAgent has no attributable plist; refusing to inspect it.")
+    validate_loaded_macos_job(loaded.stdout, domain, mac_plist_path(), document)
+    if loaded.returncode == 0:
+        print(loaded.stdout.strip())
+        return
 
 
-def uninstall_macos() -> None:
+def uninstall_macos(root: Path) -> None:
     domain = f"gui/{os.getuid()}"
+    document = read_macos_job(root)
+    loaded = _query_macos_job(domain)
+    if document is None and loaded is None:
+        print("PKM scheduled sync is not installed for this user.")
+        return
+    if document is None:
+        raise SchedulerError("A loaded LaunchAgent has no attributable plist; refusing to remove it.")
     plist_path = safe_path(mac_plist_path(), anchor=Path.home())
-    result = run(["launchctl", "bootout", f"{domain}/{MAC_LABEL}"], check=False)
-    if result.returncode != 0 and plist_path.exists():
-        loaded = run(["launchctl", "print", f"{domain}/{MAC_LABEL}"], check=False)
-        if loaded.returncode == 0:
-            raise SchedulerError(result.stderr.strip() or "Could not unload the LaunchAgent.")
+    if loaded is not None:
+        validate_loaded_macos_job(loaded.stdout, domain, plist_path, document)
+        run(["launchctl", "bootout", f"{domain}/{MAC_LABEL}"])
     plist_path.unlink(missing_ok=True)
     print(f"Removed LaunchAgent: {MAC_LABEL}")
 
@@ -273,10 +433,87 @@ def systemd_timer() -> str:
     )
 
 
+def read_systemd_unit(path: Path, unit_dir: Path) -> str | None:
+    path = safe_path(path, anchor=unit_dir)
+    if not path.exists():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise SchedulerError(f"Existing systemd unit cannot be safely read: {path.name}") from exc
+
+
+def validate_systemd_service(content: str, root: Path) -> None:
+    lines = content.splitlines()
+    if (
+        len(lines) != 8
+        or lines[0] != "[Unit]"
+        or lines[1] != "Description=Synchronize PKM Storage repository"
+        or lines[2] != ""
+        or lines[3] != "[Service]"
+        or lines[4] != "Type=oneshot"
+        or lines[5] != f"WorkingDirectory={systemd_quote(str(root))}"
+        or not lines[6].startswith("Environment=")
+        or not lines[7].startswith("ExecStart=")
+    ):
+        raise SchedulerError("Existing systemd service does not match this Storage; refusing to modify it.")
+
+    environment = _systemd_unquote(lines[6][len("Environment=") :])
+    exec_start = lines[7][len("ExecStart=") :]
+    if not environment.startswith("PATH=") or not exec_start.endswith(" run sync"):
+        raise SchedulerError("Existing systemd service does not match this Storage; refusing to modify it.")
+    mise = _systemd_unquote(exec_start[: -len(" run sync")])
+    if not Path(mise).is_absolute() or Path(mise).name != "mise":
+        raise SchedulerError("Existing systemd service does not match this Storage; refusing to modify it.")
+    if systemd_service(root, mise, environment[len("PATH=") :]) != content:
+        raise SchedulerError("Existing systemd service does not match this Storage; refusing to modify it.")
+
+
+def _systemd_unquote(value: str) -> str:
+    if len(value) < 2 or value[0] != '"' or value[-1] != '"':
+        raise SchedulerError("Existing systemd service does not match this Storage; refusing to modify it.")
+    encoded = value[1:-1]
+    decoded: list[str] = []
+    index = 0
+    while index < len(encoded):
+        char = encoded[index]
+        if char == "\\":
+            index += 1
+            if index >= len(encoded) or encoded[index] not in {'\\', '"'}:
+                raise SchedulerError("Existing systemd service does not match this Storage; refusing to modify it.")
+            decoded.append(encoded[index])
+        elif char == "%":
+            if index + 1 >= len(encoded) or encoded[index + 1] != "%":
+                raise SchedulerError("Existing systemd service does not match this Storage; refusing to modify it.")
+            decoded.append("%")
+            index += 1
+        else:
+            decoded.append(char)
+        index += 1
+    result = "".join(decoded)
+    if systemd_quote(result) != value:
+        raise SchedulerError("Existing systemd service does not match this Storage; refusing to modify it.")
+    return result
+
+
+def validate_linux_job(root: Path, service: str | None, timer: str | None) -> bool:
+    if service is None and timer is None:
+        return False
+    if service is None or timer is None:
+        raise SchedulerError("Existing systemd timer/service pair is incomplete; refusing to modify it.")
+    validate_systemd_service(service, root)
+    if timer != systemd_timer():
+        raise SchedulerError("Existing systemd timer does not match the Framework schedule; refusing to modify it.")
+    return True
+
+
 def install_linux(root: Path, mise: str, environment_path: str) -> None:
     unit_dir = safe_directory(systemd_user_dir(), create=True, anchor=systemd_config_anchor())
     service = safe_path(unit_dir / f"{SYSTEMD_NAME}.service", anchor=unit_dir)
     timer = safe_path(unit_dir / f"{SYSTEMD_NAME}.timer", anchor=unit_dir)
+    existing_service = read_systemd_unit(service, unit_dir)
+    existing_timer = read_systemd_unit(timer, unit_dir)
+    validate_linux_job(root, existing_service, existing_timer)
     write_regular_file(service, systemd_service(root, mise, environment_path), anchor=unit_dir)
     write_regular_file(timer, systemd_timer(), anchor=unit_dir)
     run(["systemctl", "--user", "daemon-reload"])
@@ -284,15 +521,16 @@ def install_linux(root: Path, mise: str, environment_path: str) -> None:
     print(f"Installed hourly systemd user timer: {SYSTEMD_NAME}.timer")
 
 
-def status_linux() -> None:
+def status_linux(root: Path) -> None:
     unit_dir = safe_directory(
         systemd_user_dir(), create=False, anchor=systemd_config_anchor()
     )
     if not unit_dir.exists():
         print("PKM scheduled sync is not installed for this user.")
         return
-    timer = safe_path(unit_dir / f"{SYSTEMD_NAME}.timer", anchor=unit_dir)
-    if not timer.exists():
+    service = read_systemd_unit(unit_dir / f"{SYSTEMD_NAME}.service", unit_dir)
+    timer = read_systemd_unit(unit_dir / f"{SYSTEMD_NAME}.timer", unit_dir)
+    if not validate_linux_job(root, service, timer):
         print("PKM scheduled sync is not installed for this user.")
         return
     result = run(["systemctl", "--user", "list-timers", f"{SYSTEMD_NAME}.timer", "--all", "--no-pager"], check=False)
@@ -304,22 +542,24 @@ def status_linux() -> None:
         raise SchedulerError("Could not query the systemd user timer.")
 
 
-def uninstall_linux() -> None:
+def uninstall_linux(root: Path) -> None:
     unit_dir = safe_directory(
         systemd_user_dir(), create=False, anchor=systemd_config_anchor()
     )
     if not unit_dir.exists():
         print("PKM scheduled sync is not installed for this user.")
         return
-    service = safe_path(unit_dir / f"{SYSTEMD_NAME}.service", anchor=unit_dir)
-    timer = safe_path(unit_dir / f"{SYSTEMD_NAME}.timer", anchor=unit_dir)
-    if not service.exists() and not timer.exists():
+    service_path = safe_path(unit_dir / f"{SYSTEMD_NAME}.service", anchor=unit_dir)
+    timer_path = safe_path(unit_dir / f"{SYSTEMD_NAME}.timer", anchor=unit_dir)
+    service = read_systemd_unit(service_path, unit_dir)
+    timer = read_systemd_unit(timer_path, unit_dir)
+    if not validate_linux_job(root, service, timer):
         print("PKM scheduled sync is not installed for this user.")
         return
     run(["systemctl", "--user", "show-environment"])
     run(["systemctl", "--user", "disable", "--now", f"{SYSTEMD_NAME}.timer"])
-    (unit_dir / f"{SYSTEMD_NAME}.timer").unlink(missing_ok=True)
-    service.unlink(missing_ok=True)
+    timer_path.unlink(missing_ok=True)
+    service_path.unlink(missing_ok=True)
     run(["systemctl", "--user", "daemon-reload"])
     print(f"Removed systemd user timer: {SYSTEMD_NAME}.timer")
 
@@ -366,18 +606,18 @@ def dispatch(action: str, root: Path) -> None:
         if action == "install":
             install_macos(root, mise_executable(), os.environ.get("PATH", ""))
         elif action == "status":
-            status_macos()
+            status_macos(root)
         else:
-            uninstall_macos()
+            uninstall_macos(root)
     elif system == "Windows":
         windows_script(root, action, mise_executable() if action == "install" else None)
     elif system == "Linux":
         if action == "install":
             install_linux(root, mise_executable(), os.environ.get("PATH", ""))
         elif action == "status":
-            status_linux()
+            status_linux(root)
         else:
-            uninstall_linux()
+            uninstall_linux(root)
     else:
         raise SchedulerError(f"Unsupported operating system: {system}")
 
