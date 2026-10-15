@@ -22,6 +22,13 @@ class ManagedResourceJournalTests(unittest.TestCase):
             "eead5e6388c82cf5d5b0eb6547aa98b8b07766d9b25ab45e9fa4e3230a05b467",
         )
 
+    def test_scheduler_accepts_previous_release_hash(self) -> None:
+        scheduler = _package_resources()["mise/scripts/scheduler.py"]
+        self.assertEqual(
+            scheduler["legacy_sha256"],
+            "79729a8de9ea32e3fa3f007a531b4b0ba134c746f9fecdc31a13c924352ed19e",
+        )
+
     def test_framework_task_resources_preserve_setup_exclusion(self) -> None:
         self.assertEqual(_safe_relative_path("mise/tasks/index.py").as_posix(), "mise/tasks/index.py")
         with self.assertRaises(ManagedResourceError):

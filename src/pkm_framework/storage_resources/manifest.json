@@ -12,7 +12,7 @@
       "path": "mise/scripts/scheduler.py",
       "sha256": "cbb98c7544d35db493142b2a7777df5547056c82887b787ac50c91fdcd9be053",
       "executable": false,
-      "legacy_sha256": "05c783f2c32ea232ac958d62c1f3a66b0a3c1c701ea6ab368ed269859f525bb9"
+      "legacy_sha256": "79729a8de9ea32e3fa3f007a531b4b0ba134c746f9fecdc31a13c924352ed19e"
     },
     {
       "path": "mise/scripts/sync.py",
