@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- CLI commands force UTF-8 for stdout and stderr, so `pkm wiki context` and other commands no longer fail with `UnicodeEncodeError` on Windows when output is redirected under a cp932 locale.
+
 ## [0.2.0] - 2026-10-15
 
 ### Changed

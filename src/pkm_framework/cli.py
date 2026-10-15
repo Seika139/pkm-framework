@@ -67,6 +67,9 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors=stream.errors)
     args = _parser().parse_args(argv)
     try:
         if args.command == "skills":
