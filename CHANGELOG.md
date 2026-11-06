@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Configured MCP search now finds accented uppercase text and canonically equivalent Unicode forms regardless of query case or normalization.
 - The `storage-policy-review` managed task now accepts both the default report command and the `--confirm` option.
+- Storage enrollment and policy review now verify Windows Storage ownership and securely stage replacements while preserving existing ACLs.
 
 ## [0.2.1] - 2026-10-15
 

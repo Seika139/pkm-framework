@@ -17,6 +17,7 @@ from unittest.mock import patch
 from pkm_framework.config import (
     ConfigChangedError,
     StorageConfigError,
+    atomic_review_hash,
     assert_snapshot,
     load_config,
     parse_config_bytes,
@@ -32,6 +33,7 @@ from pkm_framework.storage import (
     resolve_storage,
 )
 from pkm_framework.wiki import WikiApplyError, WikiWriter, _validate_topic
+from pkm_framework.windows_security import WindowsReplaceError
 
 
 SYNC_DIR = (
@@ -168,7 +170,7 @@ class StoragePolicyTests(unittest.TestCase):
 
     def test_policy_review_requires_owner_and_explicit_confirmation(self) -> None:
         config = load_config(self.root, self.vault)
-        with patch("pkm_framework.config.os.geteuid", return_value=self.root.stat().st_uid + 1):
+        with patch("pkm_framework.config._storage_owner_matches", return_value=False):
             with self.assertRaisesRegex(StorageConfigError, "Storage owner"):
                 require_owner(self.root)
 
@@ -185,6 +187,133 @@ class StoragePolicyTests(unittest.TestCase):
         reviewed = load_config(self.root, self.vault)
         self.assertEqual(reviewed.reviewed_policy_hash, config.policy_hash)
         self.assertTrue(wiki_allowed(reviewed, reviewed.profiles["personal"]))
+
+    def test_policy_review_copies_target_acl_after_payload_and_before_replace(self) -> None:
+        config = load_config(self.root, self.vault)
+        events: list[tuple[str, bytes]] = []
+
+        def observe_acl(_source: Path, temporary: Path) -> None:
+            events.append(("acl", temporary.read_bytes()))
+
+        def observe_replace(temporary: Path, destination: Path) -> None:
+            events.append(("replace", temporary.read_bytes()))
+            os.replace(temporary, destination)
+
+        with (
+            patch(
+                "pkm_framework.config.preserve_atomic_replacement_acl",
+                side_effect=observe_acl,
+            ),
+            patch(
+                "pkm_framework.config.atomic_replace_file",
+                side_effect=observe_replace,
+            ),
+        ):
+            atomic_review_hash(self.root, config)
+
+        self.assertEqual([name for name, _content in events], ["acl", "replace"])
+        self.assertEqual(events[0][1], events[1][1])
+        self.assertIn(config.policy_hash.encode("ascii"), events[0][1])
+
+    def test_policy_review_fails_closed_when_temporary_acl_cannot_be_set(self) -> None:
+        config = load_config(self.root, self.vault)
+        config_path = self.root / ".pkm" / "storage.toml"
+        original = config_path.read_bytes()
+        observed: list[bytes] = []
+
+        def fail_acl_copy(_source: Path, temporary: Path) -> None:
+            observed.append(temporary.read_bytes())
+            raise OSError("ACL copy failed")
+
+        with patch(
+            "pkm_framework.config.preserve_atomic_replacement_acl",
+            side_effect=fail_acl_copy,
+        ):
+            with self.assertRaisesRegex(StorageConfigError, "Could not safely update"):
+                atomic_review_hash(self.root, config)
+
+        self.assertEqual(len(observed), 1)
+        self.assertIn(config.policy_hash.encode("ascii"), observed[0])
+        self.assertEqual(config_path.read_bytes(), original)
+        self.assertEqual(list(config_path.parent.glob("storage.toml.*.tmp")), [])
+
+    def test_policy_review_retains_staged_content_if_target_and_backup_are_missing(self) -> None:
+        config = load_config(self.root, self.vault)
+        config_path = self.root / ".pkm" / "storage.toml"
+        temporary_paths: list[Path] = []
+
+        def fail_without_recovery_copy(temporary: Path, destination: Path) -> None:
+            temporary_paths.append(temporary)
+            destination.unlink()
+            raise WindowsReplaceError(
+                f"Windows replacement failed; staged content remains at {temporary}",
+                preserve_source=True,
+            )
+
+        with patch("pkm_framework.config.atomic_replace_file", side_effect=fail_without_recovery_copy):
+            with self.assertRaisesRegex(StorageConfigError, "staged content remains"):
+                atomic_review_hash(self.root, config)
+
+        self.assertFalse(config_path.exists())
+        self.assertTrue(temporary_paths[0].is_file())
+        self.assertIn(config.policy_hash, temporary_paths[0].read_text(encoding="utf-8"))
+
+    def test_enrollment_retains_staged_marker_if_target_and_backup_are_missing(self) -> None:
+        from pkm_framework.cli import _enroll_storage
+
+        self.marker.write_text(LEGACY_MARKER + "\n", encoding="ascii")
+        temporary_paths: list[Path] = []
+
+        def fail_without_recovery_copy(temporary: Path, destination: Path) -> None:
+            temporary_paths.append(temporary)
+            destination.unlink()
+            raise WindowsReplaceError(
+                f"Windows replacement failed; staged content remains at {temporary}",
+                preserve_source=True,
+            )
+
+        with (
+            patch("pkm_framework.config._storage_owner_matches", return_value=True),
+            patch("pkm_framework.cli.atomic_replace_file", side_effect=fail_without_recovery_copy),
+        ):
+            with self.assertRaisesRegex(StorageConfigError, "staged content remains"):
+                _enroll_storage(self.root, self.vault)
+
+        self.assertFalse(self.marker.exists())
+        self.assertTrue(temporary_paths[0].is_file())
+        self.assertEqual(temporary_paths[0].read_text(encoding="ascii"), CONFIGURED_MARKER + "\n")
+
+    def test_enrollment_copies_target_acl_after_marker_write_and_before_replace(self) -> None:
+        from pkm_framework.cli import _enroll_storage
+
+        self.marker.write_text(LEGACY_MARKER + "\n", encoding="ascii")
+        events: list[tuple[str, bytes]] = []
+
+        def observe_acl(_source: Path, temporary: Path) -> None:
+            events.append(("acl", temporary.read_bytes()))
+
+        def observe_replace(temporary: Path, destination: Path) -> None:
+            events.append(("replace", temporary.read_bytes()))
+            os.replace(temporary, destination)
+
+        with (
+            patch("pkm_framework.config._storage_owner_matches", return_value=True),
+            patch(
+                "pkm_framework.cli.preserve_atomic_replacement_acl",
+                side_effect=observe_acl,
+            ),
+            patch(
+                "pkm_framework.cli.atomic_replace_file",
+                side_effect=observe_replace,
+            ),
+        ):
+            _enroll_storage(self.root, self.vault)
+
+        expected = (CONFIGURED_MARKER + "\n").encode("ascii")
+        self.assertEqual([name for name, _content in events], ["acl", "replace"])
+        self.assertEqual(events[0][1], expected)
+        self.assertEqual(events[1][1], expected)
+        self.assertEqual(self.marker.read_bytes(), expected)
 
     def test_legacy_v1_without_config_keeps_clips_and_wiki_roots(self) -> None:
         self.marker.write_text(LEGACY_MARKER + "\n", encoding="ascii")

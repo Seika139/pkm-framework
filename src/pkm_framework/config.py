@@ -7,13 +7,18 @@ import json
 import os
 import re
 import stat
-import tempfile
 import tomllib
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pkm_framework.fileops import (
+    atomic_replace_file,
+    create_atomic_replacement_temp,
+    preserve_atomic_replacement_acl,
+    set_atomic_replacement_mode,
+)
 from pkm_framework.paths import VaultPathError, ensure_no_symlink_components, validate_vault_relative
 
 
@@ -334,15 +339,28 @@ def wiki_allowed(config: StorageConfig, profile: Profile) -> bool:
     )
 
 
+def _windows_storage_owner_matches(root: Path) -> bool:
+    """Compare the Storage directory owner SID with the current process user's SID."""
+
+    from pkm_framework.windows_security import storage_owner_matches_current_user
+
+    return storage_owner_matches_current_user(root)
+
+
+def _storage_owner_matches(root: Path) -> bool:
+    if os.name == "nt":
+        return _windows_storage_owner_matches(root)
+    return root.stat().st_uid == os.geteuid()
+
+
 def require_owner(root: Path) -> None:
     """Restrict explicit enrollment and review operations to the Storage owner."""
 
     try:
-        owner = root.stat().st_uid
-        effective = os.geteuid()
-    except (OSError, AttributeError) as exc:
+        owner_matches = _storage_owner_matches(root)
+    except Exception as exc:
         raise StorageConfigError("Cannot verify Storage ownership for this operation.") from exc
-    if owner != effective:
+    if not owner_matches:
         raise StorageConfigError("This operation is available only to the Storage owner.")
 
 
@@ -371,22 +389,37 @@ def atomic_review_hash(root: Path, config: StorageConfig) -> None:
         indent = re.match(r"^\s*", lines[found[0]]).group(0)
         lines[found[0]] = f'{indent}reviewed_policy_hash = "{config.policy_hash}"{newline}'
         payload = "".join(lines).encode("utf-8")
-        descriptor, temp_name = tempfile.mkstemp(prefix="storage.toml.", suffix=".tmp", dir=path.parent)
+        descriptor, temp_name = create_atomic_replacement_temp(
+            path.parent, prefix="storage.toml.", suffix=".tmp"
+        )
         temporary = Path(temp_name)
+        retain_temporary = False
         try:
-            os.fchmod(descriptor, stat.S_IMODE(path.stat().st_mode))
+            set_atomic_replacement_mode(descriptor, stat.S_IMODE(path.stat().st_mode))
             with os.fdopen(descriptor, "wb") as stream:
+                descriptor = -1
                 stream.write(payload)
                 stream.flush()
                 os.fsync(stream.fileno())
             ensure_no_symlink_components(path, root)
             if hashlib.sha256(path.read_bytes()).hexdigest() != config.raw_sha256:
                 raise ConfigChangedError("Storage config changed while review approval was being recorded.")
-            os.replace(temporary, path)
+            preserve_atomic_replacement_acl(path, temporary)
+            try:
+                atomic_replace_file(temporary, path)
+            except OSError as exc:
+                retain_temporary = bool(getattr(exc, "preserve_source", False))
+                raise
         finally:
-            temporary.unlink(missing_ok=True)
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+            if not retain_temporary:
+                temporary.unlink(missing_ok=True)
     except ConfigChangedError:
         raise
     except (OSError, UnicodeError, VaultPathError) as exc:
-        raise StorageConfigError("Could not safely update reviewed_policy_hash.") from exc
+        raise StorageConfigError(f"Could not safely update reviewed_policy_hash: {exc}") from exc
 

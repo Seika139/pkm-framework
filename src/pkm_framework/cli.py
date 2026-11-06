@@ -7,7 +7,6 @@ import json
 import os
 import stat
 import sys
-import tempfile
 from pathlib import Path
 
 from pkm_framework.config import (
@@ -16,6 +15,12 @@ from pkm_framework.config import (
     load_config,
     require_owner,
     wiki_policy_reviewed,
+)
+from pkm_framework.fileops import (
+    atomic_replace_file,
+    create_atomic_replacement_temp,
+    preserve_atomic_replacement_acl,
+    set_atomic_replacement_mode,
 )
 from pkm_framework.index import KnowledgeIndex
 from pkm_framework.locking import storage_write_lock
@@ -202,11 +207,15 @@ def _enroll_storage(root: Path, vault: Path) -> None:
         raise StorageConfigError("Only a legacy pkm-storage-vault-v1 Storage can be enrolled.")
     config = load_config(root, vault)
     try:
-        descriptor, temporary_name = tempfile.mkstemp(prefix=".pkm-storage.", suffix=".tmp", dir=vault)
+        descriptor, temporary_name = create_atomic_replacement_temp(
+            vault, prefix=".pkm-storage.", suffix=".tmp"
+        )
         temporary = Path(temporary_name)
+        retain_temporary = False
         try:
-            os.fchmod(descriptor, stat.S_IMODE(info.st_mode))
+            set_atomic_replacement_mode(descriptor, stat.S_IMODE(info.st_mode))
             with os.fdopen(descriptor, "w", encoding="ascii") as stream:
+                descriptor = -1
                 stream.write(CONFIGURED_MARKER + "\n")
                 stream.flush()
                 os.fsync(stream.fileno())
@@ -215,11 +224,24 @@ def _enroll_storage(root: Path, vault: Path) -> None:
                 raise StorageConfigError("Storage enrollment marker changed; enroll again after reviewing it.")
             if load_config(root, vault).raw_sha256 != config.raw_sha256:
                 raise StorageConfigError("Storage config changed while enrollment was being prepared.")
-            os.replace(temporary, marker)
+            preserve_atomic_replacement_acl(marker, temporary)
+            try:
+                atomic_replace_file(temporary, marker)
+            except OSError as exc:
+                retain_temporary = bool(getattr(exc, "preserve_source", False))
+                raise
         finally:
-            temporary.unlink(missing_ok=True)
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+            if not retain_temporary:
+                temporary.unlink(missing_ok=True)
     except OSError as exc:
-        raise StorageConfigError("Could not atomically update the Storage enrollment marker.") from exc
+        raise StorageConfigError(
+            f"Could not atomically update the Storage enrollment marker: {exc}"
+        ) from exc
     print(f"Enrolled Storage with config SHA-256 {config.raw_sha256}.")
     print("MCP now requires PKM_MCP_PROFILE; review the Wiki policy before enabling Wiki access.")
 
