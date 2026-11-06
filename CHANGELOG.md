@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Kept legacy `pkm-storage-vault-v1` Storage behavior when no config is present; Storage with a v2 marker now requires a valid config and never falls back to legacy mode.
 - Configured MCP search filters authorized sources before limit without global BM25 statistics, hidden-document snippets, or global index-change counts; the shared SQLite refresh continues to index all registered roots.
 
+### Fixed
+
+- Configured MCP search now finds accented uppercase text and canonically equivalent Unicode forms regardless of query case or normalization.
+
 ## [0.2.1] - 2026-10-15
 
 ### Fixed

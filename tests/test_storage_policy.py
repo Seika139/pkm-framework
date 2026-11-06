@@ -217,6 +217,29 @@ class StoragePolicyTests(unittest.TestCase):
             {"raw/clips/clip.md", "raw/people/person.md", "wiki/topics/sushi.md"},
         )
 
+    def test_restricted_search_uses_unicode_casefold_and_nfc(self) -> None:
+        layout = resolve_storage(self.root)
+        (self.vault / "raw/clips/clip.md").write_text(
+            "# ÉCOLE visit\nThe signs say ÉCOLE. A decomposed Cafe\u0301 appears here too.",
+            encoding="utf-8",
+        )
+        (self.vault / "raw/people/private.md").write_text(
+            "# A hidden ÉCOLE\nCafé is not authorized for this profile.",
+            encoding="utf-8",
+        )
+        index = KnowledgeIndex(layout)
+
+        for query in ("école", "café"):
+            with self.subTest(query=query):
+                results, _ = index.search(
+                    query,
+                    source_ids={"clips"},
+                    allow_wiki=False,
+                    restricted=True,
+                    limit=1,
+                )
+                self.assertEqual([result.path for result in results], ["raw/clips/clip.md"])
+
     def test_profile_read_scope_and_wiki_all_or_nothing_policy(self) -> None:
         config = load_config(self.root, self.vault)
         clips = config.profiles["clips_only"]

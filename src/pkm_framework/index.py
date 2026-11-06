@@ -7,6 +7,7 @@ import re
 import sqlite3
 import hashlib
 import tempfile
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,13 @@ class IndexingError(RuntimeError):
 
 def _absolute(path: Path) -> Path:
     return Path(os.path.abspath(path))
+
+
+def _unicode_casefold_nfc(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = unicodedata.normalize("NFC", value)
+    return unicodedata.normalize("NFC", normalized.casefold())
 
 
 def _reject_symlink_components(path: Path, anchor: Path) -> None:
@@ -161,6 +169,12 @@ def _connect(database: Path, storage_root: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(database, timeout=30)
     connection.row_factory = sqlite3.Row
     try:
+        connection.create_function(
+            "unicode_casefold_nfc",
+            1,
+            _unicode_casefold_nfc,
+            deterministic=True,
+        )
         _validate_cache_path(storage_root, database, create_parent=False)
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute(
@@ -395,8 +409,10 @@ class KnowledgeIndex:
                 parameters: list[Any] = []
                 for term in terms:
                     conditions.append(
-                        "(instr(lower(d.title), lower(?)) > 0 OR instr(lower(d.url), lower(?)) > 0 "
-                        "OR instr(lower(d.path), lower(?)) > 0 OR instr(lower(d.body), lower(?)) > 0)"
+                        "(instr(unicode_casefold_nfc(d.title), unicode_casefold_nfc(?)) > 0 "
+                        "OR instr(unicode_casefold_nfc(d.url), unicode_casefold_nfc(?)) > 0 "
+                        "OR instr(unicode_casefold_nfc(d.path), unicode_casefold_nfc(?)) > 0 "
+                        "OR instr(unicode_casefold_nfc(d.body), unicode_casefold_nfc(?)) > 0)"
                     )
                     parameters.extend((term, term, term, term))
                 rows = connection.execute(
