@@ -80,7 +80,9 @@ def _validate_storage_layout(layout: StorageLayout) -> StorageLayout:
     if not resolved_vault.is_relative_to(resolved_root):
         raise IndexingError(f"Vault must remain under Storage root: {vault}")
 
-    normalized = StorageLayout(root=root, vault=vault)
+    normalized = StorageLayout(
+        root=root, vault=vault, marker_version=layout.marker_version, config=layout.config
+    )
     for indexed_root in normalized.indexed_roots:
         _reject_symlink_components(indexed_root, vault)
         if not indexed_root.is_dir():
@@ -345,7 +347,15 @@ class KnowledgeIndex:
         finally:
             connection.close()
 
-    def search(self, query: str, limit: int = 10) -> tuple[list[SearchResult], int]:
+    def search(
+        self,
+        query: str,
+        limit: int = 10,
+        *,
+        source_ids: set[str] | None = None,
+        allow_wiki: bool | None = None,
+        restricted: bool = False,
+    ) -> tuple[list[SearchResult], int]:
         """Refresh the index and search using trigram FTS or short-query fallback."""
 
         self._validate_layout()
@@ -359,6 +369,56 @@ class KnowledgeIndex:
         terms = normalized.split()
         connection = _connect(self.database, self.layout.root)
         try:
+            if restricted:
+                # Apply authorization in SQLite before LIMIT and compute snippets only
+                # from authorized rows. Avoid FTS5's corpus-wide BM25 statistics.
+                roots: list[str] = []
+                if self.layout.config is None:
+                    if source_ids is None or "clips" in source_ids:
+                        roots.append("raw/clips/")
+                else:
+                    roots.extend(
+                        source.vault_path
+                        for source in self.layout.config.index_sources
+                        if source_ids is None or source.id in source_ids
+                    )
+                if allow_wiki is not False:
+                    roots.append("wiki/")
+                if not roots:
+                    return [], changed_count
+
+                access = "(" + " OR ".join("substr(d.path, 1, ?) = ?" for _ in roots) + ")"
+                access_parameters: list[Any] = []
+                for root in roots:
+                    access_parameters.extend((len(root), root))
+                conditions: list[str] = []
+                parameters: list[Any] = []
+                for term in terms:
+                    conditions.append(
+                        "(instr(lower(d.title), lower(?)) > 0 OR instr(lower(d.url), lower(?)) > 0 "
+                        "OR instr(lower(d.path), lower(?)) > 0 OR instr(lower(d.body), lower(?)) > 0)"
+                    )
+                    parameters.extend((term, term, term, term))
+                rows = connection.execute(
+                    "SELECT d.path, d.title, d.url, d.body FROM documents d WHERE "
+                    + access
+                    + " AND "
+                    + " AND ".join(conditions)
+                    + " ORDER BY d.title COLLATE NOCASE, d.path COLLATE BINARY LIMIT ?",
+                    (*access_parameters, *parameters, limit),
+                ).fetchall()
+                results = [
+                    SearchResult(
+                        path=row["path"],
+                        title=row["title"],
+                        url=row["url"],
+                        snippet=_plain_snippet(row["body"], terms[0]),
+                        score=0.0,
+                    )
+                    for row in rows
+                ]
+                return results, changed_count
+
             if all(len(term) >= 3 for term in terms):
                 expression = " AND ".join('"' + term.replace('"', '""') + '"' for term in terms)
                 try:

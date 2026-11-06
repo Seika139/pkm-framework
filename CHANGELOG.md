@@ -17,6 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added strict `.pkm/storage.toml` source registration and explicit MCP access profiles for source-scoped search/read and all-or-nothing Wiki access.
+- Added owner-only Storage enrollment and explicit Wiki policy review commands, with versioned markers, pinned MCP config digests, and fail-closed behavior after policy changes; approval is blocked while existing Topic source references point outside the current Wiki source roots.
+- Added source-aware Wiki `source_refs` validation and a sync allowlist derived from registered `sync = true` roots, exact policy files, and the selected Vault layout.
+
+### Changed
+
+- Kept legacy `pkm-storage-vault-v1` Storage behavior when no config is present; Storage with a v2 marker now requires a valid config and never falls back to legacy mode.
+- Configured MCP search filters authorized sources before limit without global BM25 statistics, hidden-document snippets, or global index-change counts; the shared SQLite refresh continues to index all registered roots.
+
 ## [0.2.1] - 2026-10-15
 
 ### Fixed

@@ -4,14 +4,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import stat
 import sys
+import tempfile
 from pathlib import Path
 
+from pkm_framework.config import (
+    StorageConfigError,
+    atomic_review_hash,
+    load_config,
+    require_owner,
+    wiki_policy_reviewed,
+)
 from pkm_framework.index import KnowledgeIndex
+from pkm_framework.locking import storage_write_lock
 from pkm_framework.managed_resources import install_managed_resources, verify_managed_resources
+from pkm_framework.paths import VaultPathError, ensure_no_symlink_components
 from pkm_framework.skills import install_skills
-from pkm_framework.storage import resolve_storage
-from pkm_framework.wiki import WikiApplyError, WikiWriter
+from pkm_framework.storage import CONFIGURED_MARKER, LEGACY_MARKER, MARKER_NAME, resolve_storage
+from pkm_framework.wiki import WikiApplyError, WikiWriter, audit_source_refs
 
 
 def _add_storage_option(parser: argparse.ArgumentParser) -> None:
@@ -28,7 +40,7 @@ def _parser() -> argparse.ArgumentParser:
     index_parser = commands.add_parser("index", help="Rebuild the complete SQLite FTS index")
     _add_storage_option(index_parser)
 
-    search_parser = commands.add_parser("search", help="Search clips and wiki Markdown")
+    search_parser = commands.add_parser("search", help="Search registered raw sources and Wiki Markdown")
     search_parser.add_argument("query")
     _add_storage_option(search_parser)
     search_parser.add_argument("--limit", type=int, default=10)
@@ -54,12 +66,25 @@ def _parser() -> argparse.ArgumentParser:
     install_parser = skills_commands.add_parser("install", help="Install skills into a target directory")
     install_parser.add_argument("--target", required=True, help="Target .agents/skills directory")
 
-    storage_parser = commands.add_parser("storage", help="Manage this Storage's Framework-managed resources")
+    storage_parser = commands.add_parser(
+        "storage", help="Manage Storage enrollment, source policy, and Framework-managed resources"
+    )
     storage_commands = storage_parser.add_subparsers(dest="storage_command", required=True)
     resource_install_parser = storage_commands.add_parser("install", help="Install or update pinned Framework resources")
     _add_storage_option(resource_install_parser)
     resource_verify_parser = storage_commands.add_parser("verify", help="Verify installed resources against the pinned Framework")
     _add_storage_option(resource_verify_parser)
+    enroll_parser = storage_commands.add_parser("enroll", help="Validate source policy and enroll this Storage")
+    _add_storage_option(enroll_parser)
+    review_parser = storage_commands.add_parser(
+        "policy-review", help="Review source/profile policy and optionally record explicit Wiki approval"
+    )
+    _add_storage_option(review_parser)
+    review_parser.add_argument(
+        "--confirm",
+        action="store_true",
+        help="Explicitly approve the displayed source/profile policy and update reviewed_policy_hash",
+    )
 
     mcp_parser = commands.add_parser("mcp", help="Run the stdio MCP server")
     _add_storage_option(mcp_parser)
@@ -77,7 +102,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Installed skills: {', '.join(installed)}")
             return 0
 
-        layout = resolve_storage(args.storage)
+        allow_unenrolled = args.command == "storage" and args.storage_command == "enroll"
+        layout = resolve_storage(args.storage, allow_unenrolled_config=allow_unenrolled)
         if args.command == "storage":
             if args.storage_command == "install":
                 result = install_managed_resources(layout.root)
@@ -87,6 +113,10 @@ def main(argv: list[str] | None = None) -> int:
             elif args.storage_command == "verify":
                 result = verify_managed_resources(layout.root)
                 print(f"Framework resources are ready ({result['framework_version']}).")
+            elif args.storage_command == "enroll":
+                _enroll_storage(layout.root, layout.vault)
+            elif args.storage_command == "policy-review":
+                return _review_policy(layout.root, layout.vault, confirm=args.confirm)
         elif args.command == "index":
             index = KnowledgeIndex(layout)
             count = index.rebuild()
@@ -155,6 +185,100 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, RuntimeError) as exc:
         print(f"pkm: {exc}", file=sys.stderr)
         return 2
+
+
+def _enroll_storage(root: Path, vault: Path) -> None:
+    require_owner(root)
+    marker = vault / MARKER_NAME
+    try:
+        ensure_no_symlink_components(marker, vault)
+        info = marker.lstat()
+        if not stat.S_ISREG(info.st_mode):
+            raise StorageConfigError("The Storage enrollment marker must be a regular file.")
+        current = marker.read_bytes().decode("ascii").rstrip("\r\n")
+    except (OSError, UnicodeError, VaultPathError) as exc:
+        raise StorageConfigError("Cannot read the Storage enrollment marker.") from exc
+    if current != LEGACY_MARKER:
+        raise StorageConfigError("Only a legacy pkm-storage-vault-v1 Storage can be enrolled.")
+    config = load_config(root, vault)
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(prefix=".pkm-storage.", suffix=".tmp", dir=vault)
+        temporary = Path(temporary_name)
+        try:
+            os.fchmod(descriptor, stat.S_IMODE(info.st_mode))
+            with os.fdopen(descriptor, "w", encoding="ascii") as stream:
+                stream.write(CONFIGURED_MARKER + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            ensure_no_symlink_components(marker, vault)
+            if marker.read_bytes().decode("ascii").rstrip("\r\n") != LEGACY_MARKER:
+                raise StorageConfigError("Storage enrollment marker changed; enroll again after reviewing it.")
+            if load_config(root, vault).raw_sha256 != config.raw_sha256:
+                raise StorageConfigError("Storage config changed while enrollment was being prepared.")
+            os.replace(temporary, marker)
+        finally:
+            temporary.unlink(missing_ok=True)
+    except OSError as exc:
+        raise StorageConfigError("Could not atomically update the Storage enrollment marker.") from exc
+    print(f"Enrolled Storage with config SHA-256 {config.raw_sha256}.")
+    print("MCP now requires PKM_MCP_PROFILE; review the Wiki policy before enabling Wiki access.")
+
+
+def _review_policy(root: Path, vault: Path, *, confirm: bool) -> int:
+    require_owner(root)
+    with storage_write_lock(root):
+        layout = resolve_storage(vault)
+        config = layout.config
+        if config is None:
+            raise StorageConfigError("Policy review is available only after Storage enrollment.")
+        marker = vault / MARKER_NAME
+        ensure_no_symlink_components(marker, vault)
+        if marker.read_bytes().decode("ascii").rstrip("\r\n") != CONFIGURED_MARKER:
+            raise StorageConfigError("Policy review is available only after Storage enrollment.")
+        try:
+            unresolved_refs = audit_source_refs(layout)
+        except (OSError, RuntimeError, ValueError):
+            unresolved_refs = [
+                {
+                    "wiki_path": None,
+                    "source_path": None,
+                    "reason": "Wiki source_refs could not be safely scanned.",
+                }
+            ]
+        report = {
+            "sources": [
+                {
+                    "id": source.id,
+                    "vault_path": source.vault_path,
+                    "kind": source.kind,
+                    "index": source.index,
+                    "wiki_source": source.wiki_source,
+                    "sync": source.sync,
+                }
+                for source in config.sources
+            ],
+            "profiles": {
+                name: {
+                    "source_ids": list(profile.source_ids),
+                    "wiki": {"read": profile.wiki.read, "write": profile.wiki.write},
+                }
+                for name, profile in config.profiles.items()
+            },
+            "reviewed_policy_hash": config.reviewed_policy_hash or None,
+            "current_policy_hash": config.policy_hash,
+            "wiki_policy_reviewed": wiki_policy_reviewed(config),
+            "unresolved_source_refs": unresolved_refs,
+        }
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        if unresolved_refs:
+            print("Wiki policy approval is blocked until unresolved source_refs are removed or reclassified.")
+            return 2
+        if not confirm:
+            print("No policy approval was recorded. Re-run with --confirm after reviewing the report.")
+            return 0
+        atomic_review_hash(root, config)
+        print("Recorded reviewed_policy_hash. Restart every MCP process to load the new config digest.")
+        return 0
 
 
 if __name__ == "__main__":

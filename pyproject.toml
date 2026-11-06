@@ -26,3 +26,4 @@ select = ["E4", "E7", "E9", "F"]
 # sys.path を操作してから隣接 scripts を import する構造のため E402 を除外する
 "src/pkm_framework/storage_resources/mise/tasks/*.py" = ["E402"]
 "tests/test_scheduler_ownership.py" = ["E402"]
+"tests/test_storage_policy.py" = ["E402"]

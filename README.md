@@ -15,7 +15,7 @@
 
 ## 機能
 
-- Obsidian vault の `raw/clips/` と `wiki/` にある Markdown を SQLite FTS5 で検索します。
+- Obsidian vault の登録済み `raw/` source と `wiki/` にある Markdown を SQLite FTS5 で検索します。
 - `pkm index` は全件再構築、CLI / MCP の通常検索は追加・変更・削除を差分反映します。
 - `pkm search` / `pkm read` の CLI と検索・読み取り・Wiki 書き込みに対応する stdio MCP server を提供します。
 - CLI と MCP は共通の WikiWriter を使い、変更前に Vault 境界・期待 SHA-256・Wiki の出典とリンク・索引を検証します。
@@ -46,9 +46,43 @@ mise exec -- uv run pkm search "仙台旅行" --storage /path/to/pkm-storage
 mise exec -- uv run pkm read raw/clips/example.md --storage /path/to/pkm-storage --json
 mise exec -- uv run pkm wiki context --storage /path/to/pkm-storage
 mise exec -- uv run pkm storage verify --storage /path/to/pkm-storage
+mise exec -- uv run pkm storage enroll --storage /path/to/pkm-storage
+mise exec -- uv run pkm storage policy-review --storage /path/to/pkm-storage
+mise exec -- uv run pkm storage policy-review --confirm --storage /path/to/pkm-storage
 mise exec -- uv run pkm skills install --target /path/to/pkm-storage/.agents/skills
 mise exec -- uv run pkm mcp --storage /path/to/pkm-storage
 ```
+
+## 登録 source と MCP access profile
+
+`.pkm/storage.toml` では、索引・Wiki の出典検証・定時同期に使う `raw/` source と、MCP 接続ごとの `profiles` を設定します。設定は秘密情報を含めず、定時同期はこのファイルだけを正確な path として commit 対象にします。`index` は全登録 source の共有 SQLite 索引を設定し、`wiki_source` は Wiki の出典として受け入れる source、`sync` は定時同期の対象を表します。
+
+```toml
+version = 1
+
+[[sources]]
+id = "clips"
+vault_path = "raw/clips/"
+kind = "web_clip"
+index = true
+wiki_source = true
+sync = true
+
+[wiki]
+reviewed_policy_hash = ""
+
+[profiles.clips_only]
+source_ids = ["clips"]
+[profiles.clips_only.wiki]
+read = false
+write = false
+```
+
+旧Storageは `.pkm-storage` に `pkm-storage-vault-v1` があり、`.pkm/storage.toml` がなければ現在の `raw/clips/`・Wiki・MCP動作を保ちます。設定を追加しただけでは有効になりません。`pkm storage enroll` は設定全体を検証してから marker を `pkm-storage-vault-v2` に atomic 更新します。v1 marker と設定が共存するときは enroll 以外を拒否し、v2 marker で設定が欠落・不正な場合は旧動作へ戻りません。管理 task は `mise run storage-enroll` と `mise run storage-policy-review [--confirm]` です。
+
+設定済みStorageではMCPごとに `PKM_MCP_PROFILE` を指定してください。profileにないsourceの検索・readは拒否され、restricted searchは権限のある文書だけを対象に安定した順序で検索し、全体のBM25統計・snippet・index変更件数を返しません。MCPはrawを変更できません。Wikiは `wiki.read = true` と、全ての `wiki_source = true` sourceがprofileに含まれ、reviewed policy hashが現在値に一致する場合だけ利用できます。Wiki writeにはWiki readも必要です。hashがpendingまたは不一致ならWiki全体はMCPから閉じますが、所有者はCLIでWikiを修復できます。
+
+`pkm storage policy-review` は現在のsource/profile設定とpolicy hashに加え、Wiki Topicの `source_refs` が現在の `wiki_source = true` sourceで解決できるかを報告します。無効・欠損・安全に検証できない参照が残る間は `--confirm` でも承認hashを更新しません。所有者はWikiを再分類してから再実行します。source/profile設定の変更だけで承認hashは更新されません。MCP processは起動時の設定byte hashを固定し、legacyも含めmarkerとconfig不在/内容を各toolの前後に再検証します。設定が変わると処理結果を返さず、そのprocessは以後の操作を拒否するため再起動してください。
 
 `pkm read --json` と MCP `read` は、返却内容の `truncated` と、ファイル全体のバイト列に対する `sha256`（`sha256_scope: full_file_bytes`）、`total_chars`、`next_offset` を返します。全文を読むには `offset=0` から始め、`next_offset` が `null` になるまで同じ `max_chars` で読み進めます。ページ間で SHA-256 と `total_chars` が一致し、連結した文字数が `total_chars` と一致することを確認してください。各レスポンスの本文は一部分なので、複数ページを連結して全文を得るまでは編集元にしません。
 
@@ -58,7 +92,7 @@ Wiki の適用は同じ changeset を CLI / MCP に渡します。既存ファ�
 mise exec -- uv run pkm wiki apply --storage /path/to/pkm-storage --request-file /path/to/wiki-changeset.json
 ```
 
-MCP server には、Storage root の絶対パスを `<storage>` として `mise exec -C <storage> -- uv run --project <storage>/.pkm pkm mcp --storage <storage>` を stdio server として登録し、`UV_PROJECT_ENVIRONMENT=<storage>/.pkm/runtime` を設定してください。`-C <storage>` で Storage 側の mise 設定を選びます。ツールは `search`、ページ単位の `read`、`wiki_context`、`wiki_apply` です。`wiki_context` は共通 `AGENTS.framework.md` と Storage 固有 `AGENTS.md` の本文・パス、変更契約を返します。共通規約が欠けていれば `wiki_apply` は書き込みを拒否します。`wiki_apply` は CLI と同じ WikiWriter service と changeset validator を呼びます。Topic frontmatter は任意で整数 `importance: 1`〜`5` を持てます。Topic を削除する changeset は `delete_topics` と同期後の `wiki/index.md` を含み、残る Wiki からのリンクを検証します。Wiki 内リンクには Vault 相対 Markdown ファイルまたはディレクトリ、`http` / `https` / `mailto` URL、アンカーを使えます。絶対パス、Vault 外へ出る相対パス、プロトコル相対 URL、その他の URL scheme は拒否されます。MCP / AI は commit・push せず、変更を working tree に残します。
+MCP server には、Storage root の絶対パスを `<storage>` として `mise exec -C <storage> -- uv run --project <storage>/.pkm pkm mcp --storage <storage>` を stdio server として登録し、`UV_PROJECT_ENVIRONMENT=<storage>/.pkm/runtime` を設定してください。設定済みStorageでは、接続先ごとのMCP process環境に許可するprofile名を `PKM_MCP_PROFILE` として設定します。`-C <storage>` で Storage 側の mise 設定を選びます。ツールは `search`、ページ単位の `read`、`wiki_context`、`wiki_apply` です。`wiki_context` は共通 `AGENTS.framework.md` と Storage 固有 `AGENTS.md` の本文・パス、変更契約を返します。共通規約が欠けていれば `wiki_apply` は書き込みを拒否します。`wiki_apply` は CLI と同じ WikiWriter service と changeset validator を呼びます。Topic frontmatter は任意で整数 `importance: 1`〜`5` を持てます。Topic を削除する changeset は `delete_topics` と同期後の `wiki/index.md` を含み、残る Wiki からのリンクを検証します。Wiki 内リンクには Vault 相対 Markdown ファイルまたはディレクトリ、`http` / `https` / `mailto` URL、アンカーを使えます。絶対パス、Vault 外へ出る相対パス、プロトコル相対 URL、その他の URL scheme は拒否されます。MCP / AI は commit・push せず、変更を working tree に残します。
 
 Writer は SQLite の `BEGIN IMMEDIATE` を使い、同じ Storage の PKM プロセス間で書き込みを直列化します。ロック DB `.pkm/cache/wiki-writer.sqlite` は symlink の事前検査後に絶対パスで開き、dir_fd には固定しません。同じ Storage 配下を書き換えられる外部プロセスが `.pkm/cache` またはロック DB を競合変更できる場合、相互排他は保証されません。また、この競合で Storage 外に cache ディレクトリや空のロック DB が作成される可能性があります。changeset 全体を検証してからファイルごとに一時ファイル経由で置換し、期待 hash を適用直前にも確認します。POSIX では symlink を拒否したディレクトリ descriptor に相対操作を固定します。これは複数ファイルを一括 atomically に置換する機能ではなく、Obsidian など外部プロセスによる同時編集もロックしません。hash 再確認と個々の rename / unlink の間に外部プロセスがファイル内容を変更する競合、または親ディレクトリを Vault 外へ移動する競合は完全には防げません。dir_fd が使えない Windows 等の環境ではパス検査後に通常の path 操作を行うため、TOCTOU への保護は弱くなります。I/O 失敗では rollback を試み、結果に `partial` と rollback 後も変更が残る `applied_paths` を返します。`applied_paths` には残った Markdown、作成ディレクトリ、一時ファイルが含まれます。書込みが適用済みで一時ファイルの cleanup のみ失敗した場合は `ok: true` と `partial: true` で返します。その場合、変更セットを再適用せず、報告された一時ファイルを確認してください。事前検証で拒否した場合は書込みなしとして `partial: false` になります。Wiki の FTS 再構築は書き込み成功条件に含めず、既存の検索時差分更新に任せます。Writer は Markdown の形式・パス・hash・リンクを検証し、意味の正しさや出典が主張を支持するかは AI の判断に委ねます。
 

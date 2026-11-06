@@ -11,23 +11,74 @@ import stat
 import subprocess
 import sys
 from datetime import datetime
+from dataclasses import dataclass
 from pathlib import Path
 
+from pkm_framework.config import ConfigChangedError, assert_snapshot
 from pkm_framework.locking import StorageWriteLockError, StorageWriteLockTimeout, storage_write_lock
 from pkm_framework.paths import VaultPathError, ensure_no_symlink_components
+from pkm_framework.storage import StorageLayout, resolve_storage
 
 
-ALLOWLIST = (
-    "pkm-storage-vault/raw/clips/",
-    "pkm-storage-vault/assets/",
-    "pkm-storage-vault/wiki/",
-)
 GIT_COMMAND_TIMEOUT_SECONDS = 300
 LOGGER = logging.getLogger("pkm-storage.sync")
 
 
 class SyncError(RuntimeError):
     """The scheduled sync cannot safely continue."""
+
+
+@dataclass(frozen=True)
+class SyncPolicy:
+    directory_roots: tuple[str, ...]
+    exact_files: tuple[str, ...]
+    layout: StorageLayout
+
+    def allows(self, path: str) -> bool:
+        return path in self.exact_files or any(path.startswith(root) for root in self.directory_roots)
+
+
+def sync_policy(layout: StorageLayout) -> SyncPolicy:
+    """Build sync boundaries from source registration and the selected vault name."""
+
+    vault_name = layout.vault.name
+    source_roots = (
+        [source.vault_path for source in layout.config.sync_sources]
+        if layout.config is not None
+        else ["raw/clips/"]
+    )
+    roots = tuple(
+        [f"{vault_name}/{relative}" for relative in source_roots]
+        + [f"{vault_name}/assets/", f"{vault_name}/wiki/"]
+    )
+    return SyncPolicy(
+        directory_roots=roots,
+        exact_files=(".pkm/storage.toml", f"{vault_name}/.pkm-storage"),
+        layout=layout,
+    )
+
+
+def literal_pathspecs(paths: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    """Construct Git pathspec magic that treats every validated path literally."""
+
+    return tuple(f":(literal){path}" for path in sorted(set(paths)))
+
+
+def assert_sync_policy_snapshot(root: Path, policy: SyncPolicy) -> None:
+    """Reject config or enrollment changes between sync preflight and commit."""
+
+    try:
+        current = resolve_storage(root)
+        if current.marker_version != policy.layout.marker_version:
+            raise ConfigChangedError("Storage enrollment changed during sync.")
+        expected_hash = policy.layout.config.raw_sha256 if policy.layout.config is not None else None
+        current_hash = current.config.raw_sha256 if current.config is not None else None
+        if current_hash != expected_hash:
+            raise ConfigChangedError("Storage config changed during sync.")
+        if policy.layout.config is not None:
+            assert_snapshot(root, policy.layout.vault, policy.layout.config)
+    except (OSError, ValueError) as exc:
+        raise SyncError("Storage policy changed or became invalid during sync; stopping before commit.") from exc
 
 
 class SafeRotatingFileHandler(logging.handlers.RotatingFileHandler):
@@ -175,7 +226,7 @@ def ensure_no_staged_changes(root: Path) -> None:
         raise SyncError("Could not inspect the Git index safely.")
 
 
-def changed_paths(root: Path) -> list[str]:
+def changed_paths(root: Path, policy: SyncPolicy) -> list[str]:
     result = run_git(root, "status", "--porcelain=v1", "--untracked-files=all", "-z")
     records = result.stdout.encode("utf-8", errors="surrogateescape").split(b"\0")
     paths: list[str] = []
@@ -190,10 +241,35 @@ def changed_paths(root: Path) -> list[str]:
         if status not in {b"??", b" M", b" D", b" T"}:
             raise SyncError("Staged or unmerged changes were detected; review them manually before sync.")
         path = os.fsdecode(record[3:])
-        if not path.startswith(ALLOWLIST):
+        if not policy.allows(path):
             raise SyncError("Changes outside the scheduled commit allowlist require manual review.")
         paths.append(path)
-    return paths
+
+    # A Storage .gitignore may ignore the whole .pkm directory. Inspect only the
+    # one explicitly permitted config file so a newly created config can still
+    # be enrolled into Git without broadening that exception.
+    config_path = ".pkm/storage.toml"
+    config_file = root / config_path
+    if config_file.is_file() and not config_file.is_symlink() and config_path not in paths:
+        ignored = run_git(
+            root,
+            "status",
+            "--porcelain=v1",
+            "--ignored=matching",
+            "--untracked-files=all",
+            "-z",
+            "--",
+            f":(literal){config_path}",
+        )
+        for record in ignored.stdout.encode("utf-8", errors="surrogateescape").split(b"\0"):
+            ignored_path = os.fsdecode(record[3:]) if len(record) >= 4 else ""
+            if (
+                record[0:2] == b"!!"
+                and (ignored_path == config_path or config_path.startswith(ignored_path))
+            ):
+                paths.append(config_path)
+                break
+    return sorted(set(paths))
 
 
 def configured_upstream(root: Path) -> tuple[str, str]:
@@ -221,19 +297,31 @@ def configured_upstream(root: Path) -> tuple[str, str]:
 def sync(root: Path) -> int:
     try:
         ensure_repository(root)
+        layout = resolve_storage(root)
+        policy = sync_policy(layout)
         with storage_write_lock(root, timeout=1.0):
             configure_logging(root)
             LOGGER.info("Starting scheduled sync.")
             ensure_no_operation_in_progress(root)
             ensure_no_staged_changes(root)
-            initial_changes = changed_paths(root)
+            initial_changes = changed_paths(root, policy)
             remote, merge_ref = configured_upstream(root)
 
             if initial_changes:
-                run_git(root, "add", "-A", "--", *ALLOWLIST)
-                ensure_no_staged_changes_after_own_add(root)
+                assert_sync_policy_snapshot(root, policy)
+                pathspecs = literal_pathspecs(initial_changes)
+                ordinary_paths = [path for path in initial_changes if path not in policy.exact_files]
+                exact_paths = [path for path in initial_changes if path in policy.exact_files]
+                ordinary_pathspecs = literal_pathspecs(ordinary_paths)
+                exact_pathspecs = literal_pathspecs(exact_paths)
+                if ordinary_pathspecs:
+                    run_git(root, "add", "-A", "--", *ordinary_pathspecs)
+                if exact_pathspecs:
+                    run_git(root, "add", "-f", "-A", "--", *exact_pathspecs)
+                assert_sync_policy_snapshot(root, policy)
+                ensure_no_staged_changes_after_own_add(root, policy, set(initial_changes))
                 timestamp = datetime.now().astimezone().isoformat(timespec="minutes")
-                # Keep the final commit boundary path-limited even if the index changes after preflight.
+                assert_sync_policy_snapshot(root, policy)
                 run_git(
                     root,
                     "commit",
@@ -241,9 +329,9 @@ def sync(root: Path) -> int:
                     "-m",
                     f"PKM storage scheduled sync ({timestamp})",
                     "--",
-                    *ALLOWLIST,
+                    *pathspecs,
                 )
-                LOGGER.info("Committed %d changed path(s) from the approved directories.", len(initial_changes))
+                LOGGER.info("Committed %d validated changed path(s).", len(initial_changes))
             else:
                 LOGGER.info("No local content changes to commit.")
 
@@ -276,7 +364,7 @@ def sync(root: Path) -> int:
         return 2
 
 
-def ensure_no_staged_changes_after_own_add(root: Path) -> None:
+def ensure_no_staged_changes_after_own_add(root: Path, policy: SyncPolicy, expected_paths: set[str]) -> None:
     result = run_git(root, "status", "--porcelain=v1", "--untracked-files=all", "-z")
     records = result.stdout.encode("utf-8", errors="surrogateescape").split(b"\0")
     for record in records:
@@ -290,8 +378,17 @@ def ensure_no_staged_changes_after_own_add(root: Path) -> None:
         if status[0:1] not in {b"A", b"M", b"D", b"T"} or status[1:2] != b" ":
             raise SyncError("A file changed while being staged; review the working tree and index before sync.")
         path = os.fsdecode(record[3:])
-        if not path.startswith(ALLOWLIST):
+        if not policy.allows(path) or path not in expected_paths:
             raise SyncError("Staging included a path outside the scheduled allowlist.")
+
+    staged = run_git(root, "diff", "--cached", "--name-only", "-z").stdout
+    staged_paths = {
+        os.fsdecode(path)
+        for path in staged.encode("utf-8", errors="surrogateescape").split(b"\0")
+        if path
+    }
+    if staged_paths != expected_paths:
+        raise SyncError("The staged path set changed during sync; review the Git index manually.")
 
 
 def main() -> int:
