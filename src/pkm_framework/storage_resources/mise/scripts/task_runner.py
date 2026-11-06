@@ -71,7 +71,7 @@ def run_storage_task(task: str, args: Sequence[str], task_file: Path) -> int:
             return 2
         command = _uv_command(root, "pkm", "storage", "enroll", "--storage", str(root))
     elif task == "storage-policy-review":
-        if args not in ((), ("--confirm",)):
+        if tuple(args) not in ((), ("--confirm",)):
             print(USAGE[task], file=sys.stderr)
             return 2
         command = _uv_command(root, "pkm", "storage", "policy-review", *args, "--storage", str(root))
