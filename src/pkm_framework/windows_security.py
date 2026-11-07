@@ -49,9 +49,9 @@ def storage_owner_matches_current_user(root: Path) -> bool:
     get_named_security_info.restype = wintypes.DWORD
     owner_sid = wintypes.LPVOID()
     security_descriptor = wintypes.LPVOID()
-    is_equal_sid = advapi32.IsEqualSid
-    is_equal_sid.argtypes = [wintypes.LPVOID, wintypes.LPVOID]
-    is_equal_sid.restype = wintypes.BOOL
+    equal_sid = advapi32.EqualSid
+    equal_sid.argtypes = [wintypes.LPVOID, wintypes.LPVOID]
+    equal_sid.restype = wintypes.BOOL
     local_free = kernel32.LocalFree
     local_free.argtypes = [wintypes.HLOCAL]
     local_free.restype = wintypes.HLOCAL
@@ -72,7 +72,7 @@ def storage_owner_matches_current_user(root: Path) -> bool:
         if not owner_sid.value:
             raise OSError("Storage root has no owner SID.")
         _token_user, user_sid = _current_user_sid(advapi32, kernel32)
-        return bool(is_equal_sid(owner_sid, user_sid))
+        return bool(equal_sid(owner_sid, user_sid))
     finally:
         if security_descriptor.value:
             local_free(security_descriptor)

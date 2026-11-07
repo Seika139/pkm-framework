@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import ctypes
 import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pkm_framework.config as storage_config
@@ -37,6 +39,44 @@ class WindowsPermissionsTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(StorageConfigError, "Cannot verify Storage ownership"):
                     storage_config.require_owner(self.root)
+
+    def test_windows_owner_check_uses_exported_equal_sid(self) -> None:
+        from ctypes import wintypes
+
+        class FakeFunction:
+            def __init__(self, result=None):
+                self.argtypes = None
+                self.restype = None
+                self.calls = []
+                self.result = result
+
+            def __call__(self, *args):
+                self.calls.append(args)
+                if callable(self.result):
+                    return self.result(*args)
+                return self.result
+
+        def get_named_security_info(*args):
+            owner_sid_output = ctypes.cast(args[3], ctypes.POINTER(wintypes.LPVOID))
+            owner_sid_output.contents.value = 1234
+            return 0
+
+        advapi32 = SimpleNamespace(
+            GetNamedSecurityInfoW=FakeFunction(get_named_security_info),
+            EqualSid=FakeFunction(1),
+        )
+        kernel32 = SimpleNamespace(LocalFree=FakeFunction())
+        with (
+            patch.object(ctypes, "WinDLL", side_effect=[advapi32, kernel32], create=True),
+            patch.object(
+                windows_security,
+                "_current_user_sid",
+                return_value=(object(), wintypes.LPVOID(5678)),
+            ),
+        ):
+            self.assertTrue(windows_security.storage_owner_matches_current_user(self.root))
+
+        self.assertEqual(len(advapi32.EqualSid.calls), 1)
 
     def test_windows_atomic_replace_keeps_acl_path_and_skips_fchmod(self) -> None:
         source = self.root / "temporary"
