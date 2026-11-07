@@ -346,6 +346,20 @@ class StoragePolicyTests(unittest.TestCase):
             {"raw/clips/clip.md", "raw/people/person.md", "wiki/topics/sushi.md"},
         )
 
+    def test_missing_configured_source_is_empty_until_created(self) -> None:
+        people_root = self.vault / "raw/people"
+        people_root.rmdir()
+        (self.vault / "raw/clips/clip.md").write_text("# Available\nclipword", encoding="utf-8")
+
+        index = KnowledgeIndex(resolve_storage(self.root))
+        results, _ = index.search("clipword")
+        self.assertEqual([result.path for result in results], ["raw/clips/clip.md"])
+
+        people_root.mkdir()
+        (people_root / "person.md").write_text("# Favorite\npersonword", encoding="utf-8")
+        results, _ = index.search("personword")
+        self.assertEqual([result.path for result in results], ["raw/people/person.md"])
+
     def test_restricted_search_uses_unicode_casefold_and_nfc(self) -> None:
         layout = resolve_storage(self.root)
         (self.vault / "raw/clips/clip.md").write_text(

@@ -48,6 +48,36 @@ def _reject_symlink_components(path: Path, anchor: Path) -> None:
         raise IndexingError(str(exc)) from exc
 
 
+def _configured_source_roots(layout: StorageLayout) -> frozenset[Path]:
+    if layout.config is None:
+        return frozenset()
+    return frozenset(
+        _absolute(layout.vault / source.vault_path.rstrip("/"))
+        for source in layout.config.index_sources
+    )
+
+
+def _resolve_indexed_root(
+    layout: StorageLayout, indexed_root: Path, resolved_vault: Path
+) -> Path | None:
+    """Validate an indexed root, allowing an absent configured source as empty."""
+
+    _reject_symlink_components(indexed_root, layout.vault)
+    try:
+        resolved_root = indexed_root.resolve(strict=True)
+    except FileNotFoundError as exc:
+        if _absolute(indexed_root) in _configured_source_roots(layout):
+            return None
+        raise IndexingError(f"Indexed root must be a real directory under the vault: {indexed_root}") from exc
+    except OSError as exc:
+        raise IndexingError(f"Cannot resolve indexed root {indexed_root}: {exc}") from exc
+    if not indexed_root.is_dir():
+        raise IndexingError(f"Indexed root must be a real directory under the vault: {indexed_root}")
+    if not resolved_root.is_relative_to(resolved_vault):
+        raise IndexingError(f"Indexed root resolves outside the vault: {indexed_root}")
+    return resolved_root
+
+
 def _validate_cache_path(root: Path, path: Path, *, create_parent: bool) -> None:
     root = _absolute(root)
     path = _absolute(path)
@@ -92,11 +122,7 @@ def _validate_storage_layout(layout: StorageLayout) -> StorageLayout:
         root=root, vault=vault, marker_version=layout.marker_version, config=layout.config
     )
     for indexed_root in normalized.indexed_roots:
-        _reject_symlink_components(indexed_root, vault)
-        if not indexed_root.is_dir():
-            raise IndexingError(f"Indexed root must be a real directory under the vault: {indexed_root}")
-        if not indexed_root.resolve(strict=True).is_relative_to(resolved_vault):
-            raise IndexingError(f"Indexed root resolves outside the vault: {indexed_root}")
+        _resolve_indexed_root(normalized, indexed_root, resolved_vault)
     return normalized
 
 
@@ -155,11 +181,9 @@ def _scan_markdown(layout: StorageLayout) -> list[MarkdownFile]:
                 raise IndexingError(f"Cannot inspect {path}: {exc}") from exc
 
     for root in layout.indexed_roots:
-        _reject_symlink_components(root, layout.vault)
-        if not root.resolve(strict=True).is_relative_to(layout.vault.resolve(strict=True)):
-            raise IndexingError(f"Indexed directory must remain inside the vault: {root}")
-        if not root.is_dir():
-            raise IndexingError(f"Required Markdown directory does not exist: {root}")
+        resolved_root = _resolve_indexed_root(layout, root, layout.vault.resolve(strict=True))
+        if resolved_root is None:
+            continue
         walk(root)
     return files
 
@@ -234,7 +258,12 @@ def _resolve_allowed_file(layout: StorageLayout, path: Path) -> Path:
         resolved = resolve_vault_path(layout.vault, relative, must_exist=True).resolve(strict=True)
     except (ValueError, OSError, VaultPathError) as exc:
         raise IndexingError(f"Cannot resolve Markdown path inside the vault: {path}") from exc
-    allowed_roots = tuple(root.resolve(strict=True) for root in layout.indexed_roots)
+    resolved_vault = layout.vault.resolve(strict=True)
+    allowed_roots = tuple(
+        resolved_root
+        for root in layout.indexed_roots
+        if (resolved_root := _resolve_indexed_root(layout, root, resolved_vault)) is not None
+    )
     if not resolved.is_file() or resolved.suffix.lower() != ".md":
         raise IndexingError(f"Not a Markdown file: {path}")
     if not any(resolved.is_relative_to(root) for root in allowed_roots):
