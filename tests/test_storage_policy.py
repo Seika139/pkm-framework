@@ -188,6 +188,18 @@ class StoragePolicyTests(unittest.TestCase):
         self.assertEqual(reviewed.reviewed_policy_hash, config.policy_hash)
         self.assertTrue(wiki_allowed(reviewed, reviewed.profiles["personal"]))
 
+    def test_policy_review_rejects_multiline_hash_without_modifying_config(self) -> None:
+        self.write_config(config_text().replace('reviewed_policy_hash = ""', 'reviewed_policy_hash = """\n"""'))
+        config = load_config(self.root, self.vault)
+        config_path = self.root / ".pkm" / "storage.toml"
+        original = config_path.read_bytes()
+
+        with self.assertRaisesRegex(StorageConfigError, "single-line empty or SHA-256 string"):
+            atomic_review_hash(self.root, config)
+
+        self.assertEqual(config_path.read_bytes(), original)
+        self.assertEqual(list(config_path.parent.glob("storage.toml.*.tmp")), [])
+
     def test_policy_review_copies_target_acl_after_payload_and_before_replace(self) -> None:
         config = load_config(self.root, self.vault)
         events: list[tuple[str, bytes]] = []

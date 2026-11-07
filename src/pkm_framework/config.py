@@ -385,10 +385,29 @@ def atomic_review_hash(root: Path, config: StorageConfig) -> None:
                 found.append(index)
         if len(found) != 1:
             raise StorageConfigError("Cannot locate one [wiki].reviewed_policy_hash setting to update.")
-        newline = "\r\n" if lines[found[0]].endswith("\r\n") else "\n"
-        indent = re.match(r"^\s*", lines[found[0]]).group(0)
-        lines[found[0]] = f'{indent}reviewed_policy_hash = "{config.policy_hash}"{newline}'
+        assignment = re.match(
+            r"^(?P<prefix>[ \t]*(?:reviewed_policy_hash|\"reviewed_policy_hash\")[ \t]*=[ \t]*)"
+            r"(?P<quote>[\"'])(?:[0-9a-f]{64})?(?P=quote)"
+            r"(?P<suffix>[ \t]*(?:\#[^\r\n]*)?)(?P<newline>\r?\n)?$",
+            lines[found[0]],
+        )
+        if assignment is None:
+            raise StorageConfigError(
+                "Cannot safely update [wiki].reviewed_policy_hash unless it uses a single-line empty or SHA-256 string."
+            )
+        quote = assignment.group("quote")
+        newline = assignment.group("newline") or ""
+        lines[found[0]] = (
+            f"{assignment.group('prefix')}{quote}{config.policy_hash}{quote}"
+            f"{assignment.group('suffix')}{newline}"
+        )
         payload = "".join(lines).encode("utf-8")
+        try:
+            rewritten = tomllib.loads(payload.decode("utf-8"))
+        except (tomllib.TOMLDecodeError, UnicodeError) as exc:
+            raise StorageConfigError("Cannot update reviewed_policy_hash because the resulting TOML is invalid.") from exc
+        if rewritten.get("wiki", {}).get("reviewed_policy_hash") != config.policy_hash:
+            raise StorageConfigError("Cannot verify the rewritten [wiki].reviewed_policy_hash value.")
         descriptor, temp_name = create_atomic_replacement_temp(
             path.parent, prefix="storage.toml.", suffix=".tmp"
         )
