@@ -12,6 +12,7 @@ from typing import Sequence
 USAGE = {
     "read": "Usage: mise run read -- <vault-relative-path>",
     "search": "Usage: mise run search -- <query>",
+    "storage-policy-review": "Usage: mise run storage-policy-review [--confirm]",
 }
 
 
@@ -61,10 +62,20 @@ def run_storage_task(task: str, args: Sequence[str], task_file: Path) -> int:
 
     root = task_file.resolve().parents[2]
     environment = _environment(root)
-    if not _require_storage_ready(root, environment):
+    if task != "storage-enroll" and not _require_storage_ready(root, environment):
         return 2
 
-    if task == "index":
+    if task == "storage-enroll":
+        if args:
+            print("Usage: mise run storage-enroll", file=sys.stderr)
+            return 2
+        command = _uv_command(root, "pkm", "storage", "enroll", "--storage", str(root))
+    elif task == "storage-policy-review":
+        if tuple(args) not in ((), ("--confirm",)):
+            print(USAGE[task], file=sys.stderr)
+            return 2
+        command = _uv_command(root, "pkm", "storage", "policy-review", *args, "--storage", str(root))
+    elif task == "index":
         command = _uv_command(root, "pkm", "index", "--storage", str(root))
     elif task == "mcp":
         command = _uv_command(root, "pkm", "mcp", "--storage", str(root))

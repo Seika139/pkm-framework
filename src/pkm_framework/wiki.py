@@ -10,7 +10,7 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote, unquote, urlsplit
 
 from pkm_framework.paths import (
@@ -493,11 +493,18 @@ def _validate_no_inbound_deleted_links(
                 )
 
 
-def _validate_topic(vault: Path, relative: str, content: str) -> None:
+def _validate_topic(vault: Path, relative: str, content: str, layout: StorageLayout | None = None) -> None:
     for ref in _topic_source_refs(content, relative):
         path = ref["path"]
-        if not isinstance(path, str) or not path.startswith("raw/clips/") or not path.lower().endswith(".md"):
-            raise ValueError(f"Topic source_refs must point to raw/clips Markdown: {relative}.")
+        if not isinstance(path, str) or not path.lower().endswith(".md"):
+            raise ValueError(f"Topic source_refs must point to registered Markdown: {relative}.")
+        if layout is None or layout.config is None:
+            if not path.startswith("raw/clips/"):
+                raise ValueError(f"Topic source_refs must point to raw/clips Markdown: {relative}.")
+        else:
+            source = layout.source_for_path(path)
+            if source is None or not source.wiki_source:
+                raise ValueError(f"Topic source_refs must point to a registered Wiki source: {relative}.")
         try:
             resolve_vault_path(vault, path, must_exist=True)
         except VaultPathError as exc:
@@ -507,6 +514,59 @@ def _validate_topic(vault: Path, relative: str, content: str) -> None:
             parsed = urlsplit(url)
             if parsed.scheme not in {"http", "https"} or not parsed.netloc:
                 raise ValueError(f"Topic source_refs url must be an http(s) URL: {relative}.")
+
+
+def audit_source_refs(layout: StorageLayout) -> list[dict[str, str | None]]:
+    """Find existing Topic source_refs that the current configured policy cannot validate."""
+
+    if layout.config is None:
+        raise ValueError("Source-ref policy review requires a configured Storage.")
+    findings: list[dict[str, str | None]] = []
+    for relative in _all_topic_paths(layout.vault):
+        try:
+            content = _safe_read(layout.vault, relative).decode("utf-8")
+            references = _topic_source_refs(content, relative)
+        except (OSError, UnicodeError, ValueError, VaultPathError):
+            findings.append(
+                {
+                    "wiki_path": relative,
+                    "source_path": None,
+                    "reason": "Topic source_refs could not be read and validated.",
+                }
+            )
+            continue
+        for reference in references:
+            source_path = reference["path"]
+            source = layout.source_for_path(source_path or "")
+            if source is None or not source.wiki_source:
+                findings.append(
+                    {
+                        "wiki_path": relative,
+                        "source_path": source_path,
+                        "reason": "Source is not registered with wiki_source = true.",
+                    }
+                )
+                continue
+            if not source_path.lower().endswith(".md"):
+                findings.append(
+                    {
+                        "wiki_path": relative,
+                        "source_path": source_path,
+                        "reason": "Source reference is not a Markdown file.",
+                    }
+                )
+                continue
+            try:
+                resolve_vault_path(layout.vault, source_path, must_exist=True)
+            except (OSError, VaultPathError):
+                findings.append(
+                    {
+                        "wiki_path": relative,
+                        "source_path": source_path,
+                        "reason": "Source file is missing or unsafe.",
+                    }
+                )
+    return findings
 
 
 def _validate_index(vault: Path, content: str, writes: dict[str, bytes], deleted: set[str]) -> None:
@@ -561,8 +621,9 @@ def _validate_index(vault: Path, content: str, writes: dict[str, bytes], deleted
 class WikiWriter:
     """Validate and apply AI-authored changesets to one selected Vault."""
 
-    def __init__(self, layout: StorageLayout):
+    def __init__(self, layout: StorageLayout, *, config_guard: Callable[[], None] | None = None):
         self.layout = layout
+        self.config_guard = config_guard
         self.vault = Path(os.path.abspath(layout.vault.expanduser()))
         self.root = Path(os.path.abspath(layout.root.expanduser()))
         if self.root.is_symlink() or not self.root.is_dir():
@@ -632,6 +693,7 @@ class WikiWriter:
         changeset = WikiChangeSet.parse(request)
         try:
             with storage_write_lock(self.root):
+                self._guard_config()
                 try:
                     verify_managed_resources_locked(self.root)
                 except ManagedResourceError as exc:
@@ -747,7 +809,7 @@ class WikiWriter:
                 continue
             content = _decode_utf8(item.new, item.path)
             if item.path.startswith("wiki/topics/"):
-                _validate_topic(self.vault, item.path, content)
+                _validate_topic(self.vault, item.path, content, self.layout)
                 original_text = _decode_utf8(item.original, item.path) if item.original is not None else None
                 old_importance = _frontmatter_field_values(original_text, "importance") if original_text is not None else ()
                 new_importance = _frontmatter_field_values(content, "importance")
@@ -819,16 +881,21 @@ class WikiWriter:
                 if item.action == "delete":
                     parent = self._open_parent(item.path, create=False)
                     try:
+                        self._guard_config()
                         self._recheck_before_apply(item, parent)
+                        self._guard_config()
                         parent.unlink()
                         applied.append(item)
+                        self._guard_config()
                     finally:
                         parent.close()
                 else:
                     staged_file = staged[item.path]
                     self._recheck_before_apply(item, staged_file.parent)
+                    self._guard_config()
                     staged_file.parent.replace(staged_file)
                     applied.append(item)
+                    self._guard_config()
         except Exception as exc:
             created_directories = {
                 directory
@@ -883,6 +950,10 @@ class WikiWriter:
                 f"Could not safely open Wiki directory: {relative}.",
                 tuple(getattr(exc, "cleanup_paths", ())),
             ) from exc
+
+    def _guard_config(self) -> None:
+        if self.config_guard is not None:
+            self.config_guard()
 
     def _stage(self, relative: str, content: bytes) -> StagedFile:
         parent: SafeVaultParent | None = None

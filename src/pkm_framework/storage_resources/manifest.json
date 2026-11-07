@@ -16,63 +16,73 @@
     },
     {
       "path": "mise/scripts/sync.py",
-      "sha256": "dfc0c03b0bac8d1f3daa413a38b19d80f90e7f3591c2484e307393569c506815",
+      "sha256": "0eaa0def891bdb87d09c910e8173a18308bcbc37c7caf799e4c6dcbaacfa3591",
       "executable": false,
       "legacy_sha256": "6fc79391ffd2ceec66ebf17885214d5b05b8f2d85d3eabcb82346ee77307cfd6"
     },
     {
       "path": "mise/scripts/task_runner.py",
-      "sha256": "f75d278571a8bb5f3e38a8e2af08377d2935d814b760e4667d2b6f2173d4e536",
+      "sha256": "88ca5156bc0157f4892dfe55234e5473e1144e22df4c903c4374d4dbddf93676",
       "executable": false
     },
     {
       "path": "mise/tasks/index.py",
       "sha256": "e401a71bf2b5ccad03fb2019a4c5c267a248274d38298350580a01dbdc135b99",
-      "executable": true
+      "executable": false
     },
     {
       "path": "mise/tasks/mcp.py",
-      "sha256": "4397e1471362e1acd00e967932ddc58868302d122f4c935312ac5270074c5b6c",
-      "executable": true
+      "sha256": "78d8f37abca895dcc64faf49d5e215a0d5e17099887ef3a8f89829ec5a6933a5",
+      "executable": false
     },
     {
       "path": "mise/tasks/read.py",
       "sha256": "a933d46408b7736ea3329ff6e89d2a30aff1f57c34c0815fcc3b194e9976b99b",
-      "executable": true
+      "executable": false
     },
     {
       "path": "mise/tasks/schedule-install.py",
       "sha256": "869d9bef8cbba8856ecbc650fc408e442dd544152e7f0ea181401c8280b065be",
-      "executable": true
+      "executable": false
     },
     {
       "path": "mise/tasks/schedule-status.py",
       "sha256": "4f8fa26e2d00d3974d8aebbd94ae0f6a1e3a44a79bf887f2392b7a9fce3b0cbf",
-      "executable": true
+      "executable": false
     },
     {
       "path": "mise/tasks/schedule-uninstall.py",
       "sha256": "1a213acb11b6c4255cfd1046facf943e6222ec8483c822a5bb722995bbee9865",
-      "executable": true
+      "executable": false
     },
     {
       "path": "mise/tasks/search.py",
       "sha256": "091789d285c3a93fc2e98c45a4ebe01d86281b3b1c3e5b63fbe4752d01e7179c",
-      "executable": true
+      "executable": false
     },
     {
       "path": "mise/tasks/skills-install.py",
       "sha256": "4d7710248718b958a6a702e58097e9dddc7e1850bd8a0aafb810a24256ea5bf2",
+      "executable": false
+    },
+    {
+      "path": "mise/tasks/storage-enroll.py",
+      "sha256": "d162cfbc66d3cdb0898c8ad595fde35bc0b6469de035014a18e3733432783e7b",
+      "executable": true
+    },
+    {
+      "path": "mise/tasks/storage-policy-review.py",
+      "sha256": "9afd2590ffeb0a73721fbb7ebec5f2c45fef53d80ec4f12027ed41a8fff16c82",
       "executable": true
     },
     {
       "path": "mise/tasks/sync.py",
       "sha256": "d169daeae75d6d4facee56029d4db8d68fc420e046d31e004703680a492ed83b",
-      "executable": true
+      "executable": false
     },
     {
       "path": "pkm-storage-vault/AGENTS.framework.md",
-      "sha256": "6a31ba3b4791921f1d9a7c51dc36e51470ea590d8cc70c62d803b15fd20ba53e",
+      "sha256": "ae724d6c4d5d5410622a6c410968e8bdaf59f0654088e9b90c4e86cff5cefafb",
       "executable": false
     }
   ]

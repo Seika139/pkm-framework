@@ -7,6 +7,7 @@ import re
 import sqlite3
 import hashlib
 import tempfile
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -33,11 +34,48 @@ def _absolute(path: Path) -> Path:
     return Path(os.path.abspath(path))
 
 
+def _unicode_casefold_nfc(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = unicodedata.normalize("NFC", value)
+    return unicodedata.normalize("NFC", normalized.casefold())
+
+
 def _reject_symlink_components(path: Path, anchor: Path) -> None:
     try:
         ensure_no_symlink_components(path, anchor)
     except VaultPathError as exc:
         raise IndexingError(str(exc)) from exc
+
+
+def _configured_source_roots(layout: StorageLayout) -> frozenset[Path]:
+    if layout.config is None:
+        return frozenset()
+    return frozenset(
+        _absolute(layout.vault / source.vault_path.rstrip("/"))
+        for source in layout.config.index_sources
+    )
+
+
+def _resolve_indexed_root(
+    layout: StorageLayout, indexed_root: Path, resolved_vault: Path
+) -> Path | None:
+    """Validate an indexed root, allowing an absent configured source as empty."""
+
+    _reject_symlink_components(indexed_root, layout.vault)
+    try:
+        resolved_root = indexed_root.resolve(strict=True)
+    except FileNotFoundError as exc:
+        if _absolute(indexed_root) in _configured_source_roots(layout):
+            return None
+        raise IndexingError(f"Indexed root must be a real directory under the vault: {indexed_root}") from exc
+    except OSError as exc:
+        raise IndexingError(f"Cannot resolve indexed root {indexed_root}: {exc}") from exc
+    if not indexed_root.is_dir():
+        raise IndexingError(f"Indexed root must be a real directory under the vault: {indexed_root}")
+    if not resolved_root.is_relative_to(resolved_vault):
+        raise IndexingError(f"Indexed root resolves outside the vault: {indexed_root}")
+    return resolved_root
 
 
 def _validate_cache_path(root: Path, path: Path, *, create_parent: bool) -> None:
@@ -80,13 +118,11 @@ def _validate_storage_layout(layout: StorageLayout) -> StorageLayout:
     if not resolved_vault.is_relative_to(resolved_root):
         raise IndexingError(f"Vault must remain under Storage root: {vault}")
 
-    normalized = StorageLayout(root=root, vault=vault)
+    normalized = StorageLayout(
+        root=root, vault=vault, marker_version=layout.marker_version, config=layout.config
+    )
     for indexed_root in normalized.indexed_roots:
-        _reject_symlink_components(indexed_root, vault)
-        if not indexed_root.is_dir():
-            raise IndexingError(f"Indexed root must be a real directory under the vault: {indexed_root}")
-        if not indexed_root.resolve(strict=True).is_relative_to(resolved_vault):
-            raise IndexingError(f"Indexed root resolves outside the vault: {indexed_root}")
+        _resolve_indexed_root(normalized, indexed_root, resolved_vault)
     return normalized
 
 
@@ -145,11 +181,9 @@ def _scan_markdown(layout: StorageLayout) -> list[MarkdownFile]:
                 raise IndexingError(f"Cannot inspect {path}: {exc}") from exc
 
     for root in layout.indexed_roots:
-        _reject_symlink_components(root, layout.vault)
-        if not root.resolve(strict=True).is_relative_to(layout.vault.resolve(strict=True)):
-            raise IndexingError(f"Indexed directory must remain inside the vault: {root}")
-        if not root.is_dir():
-            raise IndexingError(f"Required Markdown directory does not exist: {root}")
+        resolved_root = _resolve_indexed_root(layout, root, layout.vault.resolve(strict=True))
+        if resolved_root is None:
+            continue
         walk(root)
     return files
 
@@ -159,6 +193,12 @@ def _connect(database: Path, storage_root: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(database, timeout=30)
     connection.row_factory = sqlite3.Row
     try:
+        connection.create_function(
+            "unicode_casefold_nfc",
+            1,
+            _unicode_casefold_nfc,
+            deterministic=True,
+        )
         _validate_cache_path(storage_root, database, create_parent=False)
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute(
@@ -218,7 +258,12 @@ def _resolve_allowed_file(layout: StorageLayout, path: Path) -> Path:
         resolved = resolve_vault_path(layout.vault, relative, must_exist=True).resolve(strict=True)
     except (ValueError, OSError, VaultPathError) as exc:
         raise IndexingError(f"Cannot resolve Markdown path inside the vault: {path}") from exc
-    allowed_roots = tuple(root.resolve(strict=True) for root in layout.indexed_roots)
+    resolved_vault = layout.vault.resolve(strict=True)
+    allowed_roots = tuple(
+        resolved_root
+        for root in layout.indexed_roots
+        if (resolved_root := _resolve_indexed_root(layout, root, resolved_vault)) is not None
+    )
     if not resolved.is_file() or resolved.suffix.lower() != ".md":
         raise IndexingError(f"Not a Markdown file: {path}")
     if not any(resolved.is_relative_to(root) for root in allowed_roots):
@@ -345,7 +390,15 @@ class KnowledgeIndex:
         finally:
             connection.close()
 
-    def search(self, query: str, limit: int = 10) -> tuple[list[SearchResult], int]:
+    def search(
+        self,
+        query: str,
+        limit: int = 10,
+        *,
+        source_ids: set[str] | None = None,
+        allow_wiki: bool | None = None,
+        restricted: bool = False,
+    ) -> tuple[list[SearchResult], int]:
         """Refresh the index and search using trigram FTS or short-query fallback."""
 
         self._validate_layout()
@@ -359,6 +412,58 @@ class KnowledgeIndex:
         terms = normalized.split()
         connection = _connect(self.database, self.layout.root)
         try:
+            if restricted:
+                # Apply authorization in SQLite before LIMIT and compute snippets only
+                # from authorized rows. Avoid FTS5's corpus-wide BM25 statistics.
+                roots: list[str] = []
+                if self.layout.config is None:
+                    if source_ids is None or "clips" in source_ids:
+                        roots.append("raw/clips/")
+                else:
+                    roots.extend(
+                        source.vault_path
+                        for source in self.layout.config.index_sources
+                        if source_ids is None or source.id in source_ids
+                    )
+                if allow_wiki is not False:
+                    roots.append("wiki/")
+                if not roots:
+                    return [], changed_count
+
+                access = "(" + " OR ".join("substr(d.path, 1, ?) = ?" for _ in roots) + ")"
+                access_parameters: list[Any] = []
+                for root in roots:
+                    access_parameters.extend((len(root), root))
+                conditions: list[str] = []
+                parameters: list[Any] = []
+                for term in terms:
+                    conditions.append(
+                        "(instr(unicode_casefold_nfc(d.title), unicode_casefold_nfc(?)) > 0 "
+                        "OR instr(unicode_casefold_nfc(d.url), unicode_casefold_nfc(?)) > 0 "
+                        "OR instr(unicode_casefold_nfc(d.path), unicode_casefold_nfc(?)) > 0 "
+                        "OR instr(unicode_casefold_nfc(d.body), unicode_casefold_nfc(?)) > 0)"
+                    )
+                    parameters.extend((term, term, term, term))
+                rows = connection.execute(
+                    "SELECT d.path, d.title, d.url, d.body FROM documents d WHERE "
+                    + access
+                    + " AND "
+                    + " AND ".join(conditions)
+                    + " ORDER BY d.title COLLATE NOCASE, d.path COLLATE BINARY LIMIT ?",
+                    (*access_parameters, *parameters, limit),
+                ).fetchall()
+                results = [
+                    SearchResult(
+                        path=row["path"],
+                        title=row["title"],
+                        url=row["url"],
+                        snippet=_plain_snippet(row["body"], terms[0]),
+                        score=0.0,
+                    )
+                    for row in rows
+                ]
+                return results, changed_count
+
             if all(len(term) >= 3 for term in terms):
                 expression = " AND ".join('"' + term.replace('"', '""') + '"' for term in terms)
                 try:

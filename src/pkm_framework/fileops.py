@@ -345,3 +345,59 @@ def _remove_created_directories(vault: Path, directories: list[str]) -> tuple[st
         if not remove_empty_vault_directory(vault, path)
     ]
     return tuple(remaining)
+
+
+def set_atomic_replacement_mode(descriptor: int, mode: int) -> None:
+    """Apply the existing file mode on POSIX; Windows replacement preserves the target ACL."""
+
+    if os.name != "nt":
+        os.fchmod(descriptor, mode)
+
+
+def _windows_create_private_temp_file(
+    directory: Path, prefix: str, suffix: str
+) -> tuple[int, str]:
+    from pkm_framework.windows_security import create_private_temp_file
+
+    return create_private_temp_file(directory, prefix, suffix)
+
+
+def create_atomic_replacement_temp(
+    directory: Path,
+    *,
+    prefix: str,
+    suffix: str,
+) -> tuple[int, str]:
+    """Create a temp file that is private to the current Windows user from its creation."""
+
+    if os.name == "nt":
+        return _windows_create_private_temp_file(directory, prefix, suffix)
+    return tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=directory)
+
+
+def _windows_copy_file_dacl(source: Path, destination: Path) -> None:
+    from pkm_framework.windows_security import copy_file_dacl
+
+    copy_file_dacl(source, destination)
+
+
+def preserve_atomic_replacement_acl(source: Path, temporary: Path) -> None:
+    """Apply the target's effective DACL to a private temp immediately before replacement."""
+
+    if os.name == "nt":
+        _windows_copy_file_dacl(source, temporary)
+
+
+def _windows_replace_file(source: Path, destination: Path) -> None:
+    from pkm_framework.windows_security import replace_file
+
+    replace_file(source, destination)
+
+
+def atomic_replace_file(source: Path, destination: Path) -> None:
+    """Atomically replace an existing file, preserving its Windows ACL."""
+
+    if os.name == "nt":
+        _windows_replace_file(source, destination)
+    else:
+        os.replace(source, destination)

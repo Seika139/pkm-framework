@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#MISE description="MCP serverを起動する"
+#MISE description="MCP serverを起動する（設定済みStorageではPKM_MCP_PROFILEが必要）"
 
 from pathlib import Path
 import sys

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pkm_framework.storage import MARKER_NAME
+from pkm_framework.storage import LEGACY_MARKER, MARKER_NAME
 from pkm_framework import cli
 
 
@@ -17,7 +17,7 @@ class CliCp932StdoutTests(unittest.TestCase):
         self.root = Path(self._tmpdir.name)
         self.vault = self.root / "vault"
         self.vault.mkdir()
-        (self.vault / MARKER_NAME).write_text("", encoding="utf-8")
+        (self.vault / MARKER_NAME).write_text(LEGACY_MARKER + "\n", encoding="ascii")
         # U+2014 (EM DASH) cannot be encoded in cp932; a real-world AGENTS.framework.md
         # already contains this character, so wiki context deterministically hits it.
         (self.vault / "AGENTS.framework.md").write_text(
@@ -52,7 +52,7 @@ class CliStderrErrorsPreservedTests(unittest.TestCase):
         self.root = Path(self._tmpdir.name)
         self.vault = self.root / "vault"
         self.vault.mkdir()
-        (self.vault / MARKER_NAME).write_text("", encoding="utf-8")
+        (self.vault / MARKER_NAME).write_text(LEGACY_MARKER + "\n", encoding="ascii")
         (self.vault / "AGENTS.framework.md").write_text("Framework rules.\n", encoding="utf-8")
         (self.vault / "AGENTS.md").write_text("Local rules.\n", encoding="utf-8")
 

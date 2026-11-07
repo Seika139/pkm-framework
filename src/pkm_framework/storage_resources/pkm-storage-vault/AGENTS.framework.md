@@ -1,10 +1,10 @@
 # Storage Wiki 規約
 
-この文書は、この Vault の Wiki を作成・検索・更新する AI と人間向けの規約です。`raw/clips/` の Markdown は原典として扱い、取り込み時も変更しません。Web Clipper による保存だけでは Wiki を更新せず、明示的な ingest の依頼、または検索時に原典を確認した再利用価値のある統合知識が生じた場合に Wiki を更新します。
+この文書は、この Vault の Wiki を作成・検索・更新する AI と人間向けの規約です。`raw/` 以下の登録済み Markdown は出どころごとの原典として扱い、取り込み時も変更しません。原典を保存しただけでは Wiki を更新せず、明示的な ingest の依頼、または検索時に原典を確認した再利用価値のある統合知識が生じた場合に Wiki を更新します。
 
 ## Wiki の構造
 
-`wiki/topics/` に、原典をまたいで再利用できる恒久的な統合知識を置きます。人物、概念、比較、情報源などの種別ごとのフォルダは作らず、必要な違いはページの題名と本文で表します。1つのクリップにつき1ページを作るのではなく、既存ページを先に探し、関連する知識があれば統合します。
+`wiki/topics/` に、原典をまたいで再利用できる恒久的な統合知識を置きます。人物、概念、比較、情報源などの種別ごとのフォルダは作らず、必要な違いはページの題名と本文で表します。1つの原典につき1ページを作るのではなく、既存ページを先に探し、関連する知識があれば統合します。
 
 `wiki/index.md` は Topic ページへのリンクと一文の説明を載せる目録です。本文や出典一覧を複製しません。追跡対象の暫定分析がある場合は、恒久的な Topic と明確に分けた「暫定分析」欄にリンクします。
 
@@ -22,17 +22,17 @@ title: "ページの題名"
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 source_refs:
-  - path: raw/clips/<filename>.md
+  - path: raw/<registered-source>/<filename>.md
     url: "https://example.com/source"
 tags: []
 ---
 ```
 
-`created` は初回作成日、`updated` は知識内容を実質的に変更した日を `YYYY-MM-DD` 形式で記録します。整形、lint、importance だけの変更では `updated` を変更しません。`importance` は任意の整数 `1`〜`5` で、未設定は未評価を表します。`source_refs.path` は Vault ルートからの相対パスとし、`url` は原典のクリップに記録されている場合だけ含めます。`source_refs` はページ全体の出典一覧です。
+`created` は初回作成日、`updated` は知識内容を実質的に変更した日を `YYYY-MM-DD` 形式で記録します。整形、lint、importance だけの変更では `updated` を変更しません。`importance` は任意の整数 `1`〜`5` で、未設定は未評価を表します。`source_refs.path` は `.pkm/storage.toml` で `wiki_source = true` に登録された `raw/` 以下の Markdown を指す Vault 相対パスとし、`url` は原典に記録されている場合だけ含めます。`source_refs` はページ全体の出典一覧です。
 
 Importance は後の見直し優先度の目安です。`5` は判断や反復利用を支える中核、`4` は長期的に再利用価値が高い知識、`3` は関心に関連し再利用が見込まれる知識、`2` は用途が限定的または低頻度の知識、`1` は一度きり、重複、陳腐化の候補を表します。ページの長さ、出典数、単なる古さから数値を推定せず、検索頻度を計測していないため反復利用も推測しません。
 
-本文は主題に合わせて構成し、重要な事実や判断の根拠には、対応する原典へ直接たどれる Markdown リンクを近くに付けます。Topic ファイルから `raw/clips/` への相対リンクは通常 `../../raw/clips/<filename>.md` です。出典一覧だけで本文中の根拠を曖昧にしません。
+本文は主題に合わせて構成し、重要な事実や判断の根拠には、対応する原典へ直接たどれる Markdown リンクを近くに付けます。Topic ファイルから `raw/` 原典への相対リンクは通常 `../../raw/<source>/<filename>.md` です。出典一覧だけで本文中の根拠を曖昧にしません。
 
 知識を裏づける出典を追跡できない場合は、恒久的な知識として Wiki に保存しません。原典と異なる表現で統合するときは、出典が支える範囲を保ちます。
 
@@ -56,11 +56,13 @@ Wiki に実質的な変更を加えた ingest または query は、`wiki/log.md
 
 ingest と query では importance を毎回採点・変更しません。`pkm-lint` と将来の定期レビューは importance の見直しや候補を報告・提案する用途です。lint は既定で report-only とし、定期レビューも自動書き込み、削除、commit を行いません。importance を適用するのは、ユーザーが「見直して反映」など明示的に依頼した場合だけで、Writer には `operation: lint` を指定します。importance だけを変更するときは Topic の `updated` を保ち、`wiki/log.md` に記録しません。
 
-Topic の忘却はユーザーの明示依頼がある場合だけ行います。importance が低いことや古いことだけでは削除しません。重複、陳腐化、今後の用途の欠如を根拠に削除候補を示します。`delete_topics` の前に対象の現行内容が Git commit 済み、または別途保全されていることを確認します。どちらも確認できない場合は削除前にユーザーへ確認し、回復を保証しません。削除 path は検索結果または Vault の実ファイル名と文字列を完全一致させ、大文字小文字や Unicode の表記を変更しません。Topic の削除では `wiki/index.md` を同じ変更に含め、Writer に残存 Topic・分析・索引・質問からのリンク検証とログ追記をさせます。`raw/clips/` は削除しません。分析ファイルの忘却も明示依頼に限ります。Topic への昇格に伴う分析削除は上の昇格手順に従います。
+Topic の忘却はユーザーの明示依頼がある場合だけ行います。importance が低いことや古いことだけでは削除しません。重複、陳腐化、今後の用途の欠如を根拠に削除候補を示します。`delete_topics` の前に対象の現行内容が Git commit 済み、または別途保全されていることを確認します。どちらも確認できない場合は削除前にユーザーへ確認し、回復を保証しません。削除 path は検索結果または Vault の実ファイル名と文字列を完全一致させ、大文字小文字や Unicode の表記を変更しません。Topic の削除では `wiki/index.md` を同じ変更に含め、Writer に残存 Topic・分析・索引・質問からのリンク検証とログ追記をさせます。登録済み raw 原典は Wiki の削除操作では変更しません。分析ファイルの忘却も明示依頼に限ります。Topic への昇格に伴う分析削除は上の昇格手順に従います。
 
 AI と MCP は Git commit や push を行わず、変更を working tree に残します。ユーザーは `git diff` で Wiki・索引・ログを確認してから手動で commit できます。
 
-明示的にインストールした Storage の定時同期だけは、`pkm-storage-vault/raw/clips/`、`pkm-storage-vault/assets/`、`pkm-storage-vault/wiki/` の変更を自動で commit し、設定済み upstream と同期できます。`.obsidian/`、Storage repo root、`.pkm/`、`.agents/`、その他の変更は自動 commit の対象外です。allowlist 外の変更、既存の staged changes、進行中の Git 操作、設定されていない remote/upstream がある場合、同期は commit 前に停止します。定時同期でも Git hooks を実行し、hook の失敗時は停止します。
+明示的にインストールした Storage の定時同期は、legacy Storage では `raw/clips/`、設定済み Storage では `sync = true` の登録 source root と、選択 Vault の `assets/`・`wiki/` の変更を自動で commit し、設定済み upstream と同期できます。`.pkm/storage.toml` と選択 Vault の `.pkm-storage` は個別ファイルとして同期対象です。`.obsidian/`、Storage repo root、`.pkm/cache/`、`.agents/`、その他の変更は自動 commit の対象外です。allowlist 外の変更、既存の staged changes、進行中の Git 操作、設定されていない remote/upstream がある場合、同期は commit 前に停止します。定時同期でも Git hooks を実行し、hook の失敗時は停止します。
+
+設定済み Storage では `mise run storage-policy-review` が登録 source、profile、既存 Topic の `source_refs` を表示し、すべてが現在の `wiki_source = true` sourceで安全に解決できる場合だけ `mise run storage-policy-review --confirm` が Wiki policy hash を更新します。非許可・欠損・検証できない参照が残る場合は承認を拒否します。source/profile の変更後はレビュー済み hash が一致するまで MCP の Wiki 全体が利用不可です。MCP の起動には `PKM_MCP_PROFILE` を明示し、許可されていない source は検索・read の結果へ含めません。Legacy MCP も起動時の v1 marker と config 不在を固定し、marker変更や config追加後は全操作を拒否します。
 
 定時同期は branch 上の未 push commit をすべて upstream へ push します。remote の履歴と分岐しても競合がなければ merge commit を作れますが、競合解決、reset、autostash、force push は行わず、ignored file を上書きしない merge を使います。ignored file が merge を妨げる場合も同期は停止します。手動で解決し、Git working tree と index が確認できる状態になってから同期を再開してください。
 
