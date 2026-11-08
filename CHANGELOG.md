@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed fresh Storage setups not recognizing Framework-provided mise tasks, including search and sync ([#23](https://github.com/Seika139/pkm-framework/pull/23)).
+
 ## [0.3.0] - 2026-11-09
 
 ### Added
