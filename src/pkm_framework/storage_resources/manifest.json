@@ -28,42 +28,42 @@
     {
       "path": "mise/tasks/index.py",
       "sha256": "e401a71bf2b5ccad03fb2019a4c5c267a248274d38298350580a01dbdc135b99",
-      "executable": false
+      "executable": true
     },
     {
       "path": "mise/tasks/mcp.py",
       "sha256": "78d8f37abca895dcc64faf49d5e215a0d5e17099887ef3a8f89829ec5a6933a5",
-      "executable": false
+      "executable": true
     },
     {
       "path": "mise/tasks/read.py",
       "sha256": "a933d46408b7736ea3329ff6e89d2a30aff1f57c34c0815fcc3b194e9976b99b",
-      "executable": false
+      "executable": true
     },
     {
       "path": "mise/tasks/schedule-install.py",
       "sha256": "869d9bef8cbba8856ecbc650fc408e442dd544152e7f0ea181401c8280b065be",
-      "executable": false
+      "executable": true
     },
     {
       "path": "mise/tasks/schedule-status.py",
       "sha256": "4f8fa26e2d00d3974d8aebbd94ae0f6a1e3a44a79bf887f2392b7a9fce3b0cbf",
-      "executable": false
+      "executable": true
     },
     {
       "path": "mise/tasks/schedule-uninstall.py",
       "sha256": "1a213acb11b6c4255cfd1046facf943e6222ec8483c822a5bb722995bbee9865",
-      "executable": false
+      "executable": true
     },
     {
       "path": "mise/tasks/search.py",
       "sha256": "091789d285c3a93fc2e98c45a4ebe01d86281b3b1c3e5b63fbe4752d01e7179c",
-      "executable": false
+      "executable": true
     },
     {
       "path": "mise/tasks/skills-install.py",
       "sha256": "4d7710248718b958a6a702e58097e9dddc7e1850bd8a0aafb810a24256ea5bf2",
-      "executable": false
+      "executable": true
     },
     {
       "path": "mise/tasks/storage-enroll.py",
@@ -78,7 +78,7 @@
     {
       "path": "mise/tasks/sync.py",
       "sha256": "d169daeae75d6d4facee56029d4db8d68fc420e046d31e004703680a492ed83b",
-      "executable": false
+      "executable": true
     },
     {
       "path": "pkm-storage-vault/AGENTS.framework.md",
