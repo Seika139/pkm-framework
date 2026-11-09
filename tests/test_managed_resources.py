@@ -1,3 +1,4 @@
+import hashlib
 import os
 import stat
 import tempfile
@@ -23,16 +24,71 @@ class ManagedResourceJournalTests(unittest.TestCase):
             "ecb0e4ecc765c2af81b206227b1301caca6cf630d305650154ca154fe97a617b",
         )
         self.assertEqual(
-            scheduler["legacy_sha256"],
-            "eead5e6388c82cf5d5b0eb6547aa98b8b07766d9b25ab45e9fa4e3230a05b467",
+            scheduler["legacy_sha256s"],
+            ["eead5e6388c82cf5d5b0eb6547aa98b8b07766d9b25ab45e9fa4e3230a05b467"],
         )
 
     def test_scheduler_accepts_previous_release_hash(self) -> None:
         scheduler = _package_resources()["mise/scripts/scheduler.py"]
-        self.assertEqual(
-            scheduler["legacy_sha256"],
+        self.assertIn(
             "cbb98c7544d35db493142b2a7777df5547056c82887b787ac50c91fdcd9be053",
+            scheduler["legacy_sha256s"],
         )
+
+    def test_scheduler_keeps_v014_legacy_hash(self) -> None:
+        scheduler = _package_resources()["mise/scripts/scheduler.py"]
+        self.assertIn(
+            "79729a8de9ea32e3fa3f007a531b4b0ba134c746f9fecdc31a13c924352ed19e",
+            scheduler["legacy_sha256s"],
+        )
+
+    def test_unmanifested_legacy_resource_is_replaced(self) -> None:
+        current = b"current scheduler"
+        legacy = b"legacy scheduler"
+        resources = {
+            "mise/scripts/scheduler.py": {
+                "content": current,
+                "sha256": hashlib.sha256(current).hexdigest(),
+                "executable": False,
+                "legacy_sha256s": [hashlib.sha256(legacy).hexdigest()],
+            }
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / ".pkm").mkdir()
+            (root / ".pkm" / "setup-incomplete").write_text("setup\n", encoding="ascii")
+            legacy_path = root / "mise" / "scripts" / "scheduler.py"
+            legacy_path.parent.mkdir(parents=True)
+            legacy_path.write_bytes(legacy)
+
+            with patch("pkm_framework.managed_resources._package_resources", return_value=resources):
+                install_managed_resources(root)
+
+            self.assertEqual(legacy_path.read_bytes(), current)
+
+    def test_unmanifested_unknown_resource_is_refused(self) -> None:
+        current = b"current scheduler"
+        resources = {
+            "mise/scripts/scheduler.py": {
+                "content": current,
+                "sha256": hashlib.sha256(current).hexdigest(),
+                "executable": False,
+                "legacy_sha256s": [],
+            }
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / ".pkm").mkdir()
+            (root / ".pkm" / "setup-incomplete").write_text("setup\n", encoding="ascii")
+            unknown_path = root / "mise" / "scripts" / "scheduler.py"
+            unknown_path.parent.mkdir(parents=True)
+            unknown_path.write_bytes(b"user content")
+
+            with patch("pkm_framework.managed_resources._package_resources", return_value=resources):
+                with self.assertRaisesRegex(ManagedResourceError, "Unowned file"):
+                    install_managed_resources(root)
+
+            self.assertEqual(unknown_path.read_bytes(), b"user content")
 
     def test_framework_task_resources_preserve_setup_exclusion(self) -> None:
         self.assertEqual(
