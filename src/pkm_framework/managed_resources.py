@@ -160,18 +160,23 @@ def _package_resources() -> dict[str, dict[str, Any]]:
         actual_hash = _sha256(content)
         if not isinstance(declared_hash, str) or declared_hash != actual_hash:
             raise ManagedResourceError(f"Packaged Framework resource hash does not match its manifest: {relative}")
-        legacy_hash = entry.get("legacy_sha256")
-        if legacy_hash is not None and (
+        legacy_hashes = entry.get("legacy_sha256")
+        if legacy_hashes is None:
+            legacy_hashes = []
+        elif isinstance(legacy_hashes, str):
+            legacy_hashes = [legacy_hashes]
+        if not isinstance(legacy_hashes, list) or any(
             not isinstance(legacy_hash, str)
             or len(legacy_hash) != 64
             or any(c not in "0123456789abcdef" for c in legacy_hash)
+            for legacy_hash in legacy_hashes
         ):
             raise ManagedResourceError(f"Invalid legacy hash for Framework resource: {relative}")
         result[relative] = {
             "content": content,
             "sha256": actual_hash,
             "executable": executable,
-            "legacy_sha256": legacy_hash,
+            "legacy_sha256s": legacy_hashes,
         }
     if not result:
         raise ManagedResourceError("Framework Storage resource manifest is empty.")
@@ -538,7 +543,7 @@ def _install_locked(root: Path) -> dict[str, Any]:
             if state is not None and _sha256(state[0]) != prior_hashes[relative]:
                 raise ManagedResourceError(f"Managed file has local edits; refusing to overwrite it: {relative}")
         elif state is not None:
-            accepted = {current_hash, entry["legacy_sha256"]} - {None}
+            accepted = {current_hash, *entry["legacy_sha256s"]}
             if _sha256(state[0]) not in accepted:
                 raise ManagedResourceError(
                     f"Unowned file already occupies a Framework-managed path: {relative}. "
