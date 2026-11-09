@@ -163,6 +163,34 @@ class SchedulerOwnershipTests(unittest.TestCase):
         with self.assertRaises(scheduler.SchedulerError):
             scheduler.validate_systemd_service(service.replace("ExecStart=", "ExecStartPre=/bin/true\nExecStart="), root)
 
+    def test_systemd_working_directory_is_not_quoted(self) -> None:
+        root = Path.cwd() / "storage" / "first"
+        service = scheduler.systemd_service(root, str(Path.cwd() / "bin" / "mise"), str(Path.cwd() / "bin"))
+        working_directory = service.splitlines()[5]
+        self.assertEqual(working_directory, f"WorkingDirectory={root}")
+        scheduler.validate_systemd_service(service, root)
+
+    def test_systemd_service_escapes_percent_in_working_directory(self) -> None:
+        root = Path.cwd() / "storage" / "100% sure"
+        service = scheduler.systemd_service(root, str(Path.cwd() / "bin" / "mise"), str(Path.cwd() / "bin"))
+        self.assertIn("WorkingDirectory=" + str(root).replace("%", "%%"), service.splitlines())
+        scheduler.validate_systemd_service(service, root)
+
+    def test_legacy_quoted_systemd_service_is_still_attributed(self) -> None:
+        root = Path.cwd() / "storage" / "first"
+        mise = str(Path.cwd() / "bin" / "mise")
+        environment_path = str(Path.cwd() / "bin")
+        current = scheduler.systemd_service(root, mise, environment_path)
+        legacy = current.replace(
+            f"WorkingDirectory={root}",
+            f'WorkingDirectory="{root}"',
+        )
+        self.assertNotEqual(legacy, current)
+        scheduler.validate_systemd_service(legacy, root)
+        self.assertTrue(scheduler.validate_linux_job(root, legacy, scheduler.systemd_timer()))
+        with self.assertRaises(scheduler.SchedulerError):
+            scheduler.validate_systemd_service(legacy, Path.cwd() / "storage" / "second")
+
     def test_status_and_uninstall_dispatch_requested_storage(self) -> None:
         root = Path.cwd() / "storage" / "selected"
         for system, action, function in (

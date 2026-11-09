@@ -31,7 +31,7 @@ class ManagedResourceJournalTests(unittest.TestCase):
         scheduler = _package_resources()["mise/scripts/scheduler.py"]
         self.assertEqual(
             scheduler["legacy_sha256"],
-            "79729a8de9ea32e3fa3f007a531b4b0ba134c746f9fecdc31a13c924352ed19e",
+            "cbb98c7544d35db493142b2a7777df5547056c82887b787ac50c91fdcd9be053",
         )
 
     def test_framework_task_resources_preserve_setup_exclusion(self) -> None:

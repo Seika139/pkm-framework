@@ -398,7 +398,29 @@ def systemd_quote(value: str) -> str:
     return f'"{escaped}"'
 
 
-def systemd_service(root: Path, mise: str, environment_path: str) -> str:
+def systemd_path(value: str) -> str:
+    """Serialize a value for a systemd setting that takes a single path.
+
+    Settings such as WorkingDirectory are parsed as the literal rest of
+    the line, so the quoting used for command lines (ExecStart) and
+    assignment lists (Environment) must not be applied here: systemd
+    keeps the quote characters as part of the path and then rejects it
+    as not absolute. Only "%" needs escaping, against specifier
+    expansion; spaces and other characters are taken literally.
+    """
+    if "\r" in value or "\n" in value:
+        raise SchedulerError("systemd unit values must not contain line breaks.")
+    return value.replace("%", "%%")
+
+
+def _systemd_service(root: Path, mise: str, environment_path: str, *, legacy: bool) -> str:
+    if legacy:
+        # Generation shipped before the WorkingDirectory quoting fix.
+        # Kept only so validate_systemd_service can still attribute
+        # units it produced to their Storage.
+        working_directory = systemd_quote(str(root))
+    else:
+        working_directory = systemd_path(str(root))
     return "\n".join(
         [
             "[Unit]",
@@ -406,12 +428,20 @@ def systemd_service(root: Path, mise: str, environment_path: str) -> str:
             "",
             "[Service]",
             "Type=oneshot",
-            f"WorkingDirectory={systemd_quote(str(root))}",
+            f"WorkingDirectory={working_directory}",
             f"Environment={systemd_quote(f'PATH={environment_path}')}",
             f"ExecStart={systemd_quote(mise)} run sync",
             "",
         ]
     )
+
+
+def systemd_service(root: Path, mise: str, environment_path: str) -> str:
+    return _systemd_service(root, mise, environment_path, legacy=False)
+
+
+def _legacy_systemd_service(root: Path, mise: str, environment_path: str) -> str:
+    return _systemd_service(root, mise, environment_path, legacy=True)
 
 
 def systemd_timer() -> str:
@@ -445,6 +475,13 @@ def read_systemd_unit(path: Path, unit_dir: Path) -> str | None:
 
 def validate_systemd_service(content: str, root: Path) -> None:
     lines = content.splitlines()
+    working_directory_lines = {
+        f"WorkingDirectory={systemd_path(str(root))}",
+        # Units generated before the WorkingDirectory quoting fix are
+        # still attributed to this Storage so that status, uninstall,
+        # and reinstall (which rewrites the unit) keep working on them.
+        f"WorkingDirectory={systemd_quote(str(root))}",
+    }
     if (
         len(lines) != 8
         or lines[0] != "[Unit]"
@@ -452,7 +489,7 @@ def validate_systemd_service(content: str, root: Path) -> None:
         or lines[2] != ""
         or lines[3] != "[Service]"
         or lines[4] != "Type=oneshot"
-        or lines[5] != f"WorkingDirectory={systemd_quote(str(root))}"
+        or lines[5] not in working_directory_lines
         or not lines[6].startswith("Environment=")
         or not lines[7].startswith("ExecStart=")
     ):
@@ -465,7 +502,11 @@ def validate_systemd_service(content: str, root: Path) -> None:
     mise = _systemd_unquote(exec_start[: -len(" run sync")])
     if not Path(mise).is_absolute() or Path(mise).name != "mise":
         raise SchedulerError("Existing systemd service does not match this Storage; refusing to modify it.")
-    if systemd_service(root, mise, environment[len("PATH=") :]) != content:
+    environment_path = environment[len("PATH=") :]
+    if content not in (
+        systemd_service(root, mise, environment_path),
+        _legacy_systemd_service(root, mise, environment_path),
+    ):
         raise SchedulerError("Existing systemd service does not match this Storage; refusing to modify it.")
 
 
