@@ -176,6 +176,31 @@ class SchedulerOwnershipTests(unittest.TestCase):
         self.assertIn("WorkingDirectory=" + str(root).replace("%", "%%"), service.splitlines())
         scheduler.validate_systemd_service(service, root)
 
+    def test_systemd_service_preserves_working_directory_suffixes_rewritten_by_parser(self) -> None:
+        mise = str(Path.cwd() / "bin" / "mise")
+        environment_path = str(Path.cwd() / "bin")
+        ordinary_root = Path.cwd() / "storage" / "ordinary"
+        ordinary_service = scheduler.systemd_service(ordinary_root, mise, environment_path)
+
+        for suffix in (" ", "\\"):
+            with self.subTest(suffix=repr(suffix)):
+                root = Path.cwd() / "storage" / f"unsafe{suffix}"
+                service = scheduler.systemd_service(root, mise, environment_path)
+                self.assertEqual(
+                    service.splitlines()[5],
+                    f"WorkingDirectory={root}/",
+                )
+                scheduler.validate_systemd_service(service, root)
+
+                # Units written before this validation existed must remain
+                # attributable so install can replace them and uninstall can
+                # remove them safely.
+                old_service = ordinary_service.replace(
+                    f"WorkingDirectory={ordinary_root}",
+                    f"WorkingDirectory={root}",
+                )
+                scheduler.validate_systemd_service(old_service, root)
+
     def test_legacy_quoted_systemd_service_is_still_attributed(self) -> None:
         root = Path.cwd() / "storage" / "first"
         mise = str(Path.cwd() / "bin" / "mise")

@@ -406,14 +406,25 @@ def systemd_path(value: str) -> str:
     assignment lists (Environment) must not be applied here: systemd
     keeps the quote characters as part of the path and then rejects it
     as not absolute. Only "%" needs escaping, against specifier
-    expansion; spaces and other characters are taken literally.
+    expansion. A trailing slash is added when needed to keep a trailing
+    whitespace character or backslash from being rewritten by the common
+    unit parser; the slash does not change the directory being addressed.
     """
     if "\r" in value or "\n" in value:
         raise SchedulerError("systemd unit values must not contain line breaks.")
-    return value.replace("%", "%%")
+    needs_terminal_separator = value.endswith((" ", "\t", "\v", "\f", "\\"))
+    serialized = value.replace("%", "%%")
+    return serialized + "/" if needs_terminal_separator else serialized
 
 
-def _systemd_service(root: Path, mise: str, environment_path: str, *, legacy: bool) -> str:
+def _systemd_service(
+    root: Path,
+    mise: str,
+    environment_path: str,
+    *,
+    legacy: bool,
+    legacy_raw_path: bool = False,
+) -> str:
     if legacy:
         # Generation shipped before the WorkingDirectory quoting fix.
         # Kept only so validate_systemd_service can still attribute
@@ -421,6 +432,10 @@ def _systemd_service(root: Path, mise: str, environment_path: str, *, legacy: bo
         working_directory = systemd_quote(str(root))
     else:
         working_directory = systemd_path(str(root))
+        if legacy_raw_path:
+            # Recognize units emitted before parser-sensitive suffixes were
+            # protected, so status and uninstall can still identify them.
+            working_directory = str(root).replace("%", "%%")
     return "\n".join(
         [
             "[Unit]",
@@ -477,6 +492,7 @@ def validate_systemd_service(content: str, root: Path) -> None:
     lines = content.splitlines()
     working_directory_lines = {
         f"WorkingDirectory={systemd_path(str(root))}",
+        f"WorkingDirectory={str(root).replace('%', '%%')}",
         # Units generated before the WorkingDirectory quoting fix are
         # still attributed to this Storage so that status, uninstall,
         # and reinstall (which rewrites the unit) keep working on them.
@@ -504,7 +520,8 @@ def validate_systemd_service(content: str, root: Path) -> None:
         raise SchedulerError("Existing systemd service does not match this Storage; refusing to modify it.")
     environment_path = environment[len("PATH=") :]
     if content not in (
-        systemd_service(root, mise, environment_path),
+        _systemd_service(root, mise, environment_path, legacy=False),
+        _systemd_service(root, mise, environment_path, legacy=False, legacy_raw_path=True),
         _legacy_systemd_service(root, mise, environment_path),
     ):
         raise SchedulerError("Existing systemd service does not match this Storage; refusing to modify it.")
